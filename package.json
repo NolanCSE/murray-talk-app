@@ -1,0 +1,21 @@
+{
+  "name": "murray-talk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "iPhone shell around Murray's /talk page",
+  "scripts": {
+    "configure": "bash scripts/configure.sh",
+    "preview:shoot": "node preview/shoot.mjs"
+  },
+  "dependencies": {
+    "@capacitor-community/keep-awake": "^8",
+    "@capacitor/core": "^8",
+    "@capacitor/ios": "^8",
+    "@capacitor/splash-screen": "^8",
+    "@capacitor/status-bar": "^8"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8",
+    "playwright": "^1"
+  }
+}

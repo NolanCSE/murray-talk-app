@@ -1,0 +1,20 @@
+{
+  "appId": "com.nolancse.murraytalk",
+  "appName": "Murray",
+  "webDir": "www",
+  "server": {
+    "url": "__TALK_URL__",
+    "allowNavigation": [],
+    "errorPath": "index.html"
+  },
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#0b0b0d",
+    "allowsLinkPreview": false,
+    "scrollEnabled": true
+  },
+  "plugins": {
+    "SplashScreen": { "launchShowDuration": 600, "backgroundColor": "#0b0b0d", "showSpinner": false },
+    "StatusBar": { "style": "DARK", "overlaysWebView": true }
+  }
+}

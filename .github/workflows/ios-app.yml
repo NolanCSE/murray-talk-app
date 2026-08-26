@@ -1,0 +1,137 @@
+# Murray iPhone app shell — built on GitHub's Mac runners (no Mac needed). Two jobs:
+#   simulator  : always. Unsigned simulator build, booted in an iPhone
+#                simulator against the stub talk server, screenshots + a
+#                recording + the .app as artifacts. ~10 macOS minutes.
+#   testflight : only when the App Store Connect secrets exist. Signs with
+#                the API key (automatic signing, no fastlane, no certificates
+#                in git) and uploads to TestFlight for internal testing.
+# Secrets never reach a log: the URL is written to a file by configure.sh
+# and the .p8 goes straight to disk.
+name: iOS app
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "README.md"]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 1 */2 *"   # every other month: TestFlight builds expire at 90 days
+concurrency:
+  group: ios-app
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      signed: ${{ steps.chk.outputs.signed }}
+    steps:
+      - id: chk
+        env:
+          HAVE_KEY: ${{ secrets.ASC_KEY_P8 }}
+          HAVE_URL: ${{ secrets.TALK_URL }}
+        run: |
+          if [ -n "$HAVE_KEY" ] && [ -n "$HAVE_URL" ]; then echo "signed=true"; else echo "signed=false"; fi >> "$GITHUB_OUTPUT"
+
+  simulator:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: package-lock.json }
+      - name: Pick newest Xcode
+        run: |
+          x=$(ls -d /Applications/Xcode*.app | sort -V | tail -1); echo "using $x"
+          sudo xcode-select -s "$x"; xcodebuild -version
+      - run: npm ci --no-audit --no-fund
+      - name: Configure for the stub server
+        run: TALK_URL=http://127.0.0.1:8765/talk/stub/ bash scripts/configure.sh
+      - run: npx cap sync ios
+      - name: Build for simulator
+        run: |
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO -quiet build
+          ls build/Build/Products/Debug-iphonesimulator/
+      - name: Start stub talk server
+        run: |
+          nohup python3 scripts/stub_talk.py --port 8765 > mock.log 2>&1 &
+          for i in $(seq 1 20); do curl -sf http://127.0.0.1:8765/talk/stub/health && break; sleep 1; done
+      - name: Boot simulator, install, launch, capture
+        run: |
+          udid=$(xcrun simctl list devices available -j | python3 -c '
+          import json,sys; d=json.load(sys.stdin)["devices"]
+          devs=[x for rt,l in d.items() if "iOS" in rt for x in l if x["name"].startswith("iPhone")]
+          devs.sort(key=lambda x: x["name"]); print(devs[-1]["udid"])')
+          xcrun simctl boot "$udid"; xcrun simctl bootstatus "$udid" -b
+          mkdir -p capture
+          xcrun simctl io "$udid" recordVideo --codec h264 capture/launch.mp4 & rec=$!
+          sleep 2
+          xcrun simctl install "$udid" build/Build/Products/Debug-iphonesimulator/App.app
+          xcrun simctl launch "$udid" com.nolancse.murraytalk
+          sleep 8
+          xcrun simctl io "$udid" screenshot capture/sim-1-start.png
+          # kill the stub: relaunch shows the offline fallback page
+          pkill -f stub_talk.py || true
+          xcrun simctl terminate "$udid" com.nolancse.murraytalk || true
+          sleep 1; xcrun simctl launch "$udid" com.nolancse.murraytalk; sleep 6
+          xcrun simctl io "$udid" screenshot capture/sim-2-offline.png
+          kill -INT $rec; sleep 3
+          cd build/Build/Products/Debug-iphonesimulator && zip -qr ../../../../capture/MurrayTalk-simulator.app.zip App.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: simulator-capture
+          path: |
+            capture/
+            mock.log
+
+  testflight:
+    needs: [gate, simulator]
+    if: needs.gate.outputs.signed == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: package-lock.json }
+      - name: Pick newest Xcode
+        run: |
+          x=$(ls -d /Applications/Xcode*.app | sort -V | tail -1); sudo xcode-select -s "$x"; xcodebuild -version
+      - run: npm ci --no-audit --no-fund
+      - name: Configure for the tailnet
+        run: bash scripts/configure.sh
+        env:
+          TALK_URL: ${{ secrets.TALK_URL }}
+      - run: npx cap sync ios
+      - name: Install the App Store Connect key
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "${{ secrets.ASC_KEY_P8 }}" | base64 --decode > ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8
+          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8
+      - name: Archive (automatic signing via the API key)
+        run: |
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath build/App.xcarchive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Automatic \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} -quiet archive
+      - name: Export .ipa
+        run: |
+          xcodebuild -exportArchive -archivePath build/App.xcarchive -exportPath build/out \
+            -exportOptionsPlist ExportOptions.plist -allowProvisioningUpdates \
+            -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" -quiet
+          ls build/out
+      - name: Upload to TestFlight
+        run: |
+          xcrun altool --upload-app -f build/out/*.ipa -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+      - name: Shred the key
+        if: always()
+        run: rm -f ~/.appstoreconnect/private_keys/AuthKey_*.p8

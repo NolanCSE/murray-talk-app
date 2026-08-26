@@ -1,0 +1,10 @@
+node_modules/
+capacitor.config.json
+ios/App/App.xcworkspace/xcuserdata/
+ios/App/build/
+ios/DerivedData/
+resources/generated/
+ios/App/App/capacitor.config.json
+ios/App/App/public/
+capture/
+mock.log
