@@ -130,8 +130,10 @@ jobs:
           ls build/out
       - name: Upload to TestFlight
         run: |
+          # altool can print a validation ERROR and still exit 0; make that fail.
           xcrun altool --upload-app -f build/out/*.ipa -t ios \
-            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee upload.log
+          ! grep -q "ERROR" upload.log
       - name: Shred the key
         if: always()
         run: rm -f ~/.appstoreconnect/private_keys/AuthKey_*.p8
