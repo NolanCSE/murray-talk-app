@@ -45,3 +45,13 @@ header Tailscale stamps), so possessing this code grants nothing.
 Whether `WKWebView` keeps `getUserMedia` alive with the screen locked
 under the `audio` background mode. The entitlement is declared; the first
 real launch answers it.
+
+## What the simulator job produced (run #1)
+
+| loaded the stub page | tailnet unreachable → fallback |
+|---|---|
+| ![start](docs/sim-1-start.png) | ![offline](docs/sim-2-offline.png) |
+
+Both are real iOS renders from the `macos-15` runner's iPhone simulator,
+not browser mock-ups. The full run also uploads `launch.mp4` and the
+`.app` zip as artifacts.
