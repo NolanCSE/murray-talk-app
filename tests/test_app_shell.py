@@ -56,6 +56,7 @@ r = subprocess.run(["bash", "scripts/configure.sh"], cwd=APP,
                    capture_output=True, text=True)
 check("configure refuses a non-https URL", r.returncode == 2)
 url = "https://murray.example.ts.net/talk/s3cr3t-value/"
+_index_before = (APP / "www/index.html").read_text()   # configure rewrites it
 r = subprocess.run(["bash", "scripts/configure.sh"], cwd=APP,
                    env=dict(os.environ, TALK_URL=url), capture_output=True, text=True)
 out = json.loads((APP / "capacitor.config.json").read_text())
@@ -65,7 +66,8 @@ check("and prints only the host, never the secret",
       "s3cr3t" not in r.stdout + r.stderr and "murray.example.ts.net" in r.stdout)
 check("the offline page's Try again points at the real URL after configure",
       url in (APP / "www/index.html").read_text())
-subprocess.run(["git", "checkout", "--", "www/index.html"], cwd=APP)
+(APP / "www/index.html").write_text(_index_before)
+check("the template keeps its placeholder", "__TALK_URL__" in _index_before)
 (APP / "capacitor.config.json").unlink()
 
 # ---- 2. the iOS project says what it needs ---------------------------------
