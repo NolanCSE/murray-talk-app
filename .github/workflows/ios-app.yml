@@ -128,6 +128,26 @@ jobs:
             -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 \
             -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" -quiet
           ls build/out
+      - name: Export ad hoc .ipa (locked to the registered devices)
+        run: |
+          xcodebuild -exportArchive -archivePath build/App.xcarchive -exportPath build/adhoc \
+            -exportOptionsPlist ExportOptions-adhoc.plist -allowProvisioningUpdates \
+            -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" -quiet
+          ls build/adhoc
+      - name: Encrypt the ad hoc .ipa (it embeds the talk URL; this repo is public)
+        env:
+          IPA_PASSPHRASE: ${{ secrets.IPA_PASSPHRASE }}
+        run: |
+          test -n "$IPA_PASSPHRASE"
+          f=$(ls build/adhoc/*.ipa | head -1)
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in "$f" -out Murray-adhoc.ipa.enc -pass env:IPA_PASSPHRASE
+          rm -f build/adhoc/*.ipa
+          ls -la Murray-adhoc.ipa.enc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adhoc-ipa-encrypted
+          path: Murray-adhoc.ipa.enc
       - name: Upload to TestFlight
         run: |
           # altool can print a validation ERROR and still exit 0; make that fail.
