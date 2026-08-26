@@ -20,5 +20,11 @@ url = sys.argv[1]
 cfg = json.load(open("capacitor.config.template.json"))
 cfg["server"]["url"] = url
 json.dump(cfg, open("capacitor.config.json", "w"), indent=2)
+# The offline page's "Try again" must go back to the REAL url, not reload
+# itself (a first launch off the tailnet was otherwise stuck forever).
+# www/ is the template; the substituted copy is what `cap sync` copies.
+import pathlib
+src = pathlib.Path("www/index.html").read_text()
+pathlib.Path("www/index.html").write_text(src.replace("__TALK_URL__", url))
 PY
 echo "configure: wrote capacitor.config.json (url host: $(python3 -c 'import sys,urllib.parse as u;print(u.urlsplit(sys.argv[1]).netloc)' "$url"))"

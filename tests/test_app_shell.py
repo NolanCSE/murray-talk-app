@@ -63,6 +63,9 @@ check("configure writes the URL into the config", r.returncode == 0
       and out["server"]["url"] == url, r.stderr)
 check("and prints only the host, never the secret",
       "s3cr3t" not in r.stdout + r.stderr and "murray.example.ts.net" in r.stdout)
+check("the offline page's Try again points at the real URL after configure",
+      url in (APP / "www/index.html").read_text())
+subprocess.run(["git", "checkout", "--", "www/index.html"], cwd=APP)
 (APP / "capacitor.config.json").unlink()
 
 # ---- 2. the iOS project says what it needs ---------------------------------
