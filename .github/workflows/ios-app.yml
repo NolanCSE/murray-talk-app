@@ -129,6 +129,26 @@ jobs:
           mkdir -p ~/.appstoreconnect/private_keys
           echo "${{ secrets.ASC_KEY_P8 }}" | base64 --decode > ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8
           chmod 600 ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8
+      - name: Prune stale development certificates
+        # Every run's fresh keychain makes Xcode mint a NEW development
+        # certificate, and Apple caps those; run 33088338601 died on
+        # "maximum number of certificates". Distribution certs are untouched.
+        run: |
+          python3 -m pip install --quiet "PyJWT[crypto]" requests
+          python3 - <<'PY'
+          import os, time, jwt, requests
+          kid, iss = os.environ["ASC_KEY_ID"], os.environ["ASC_ISSUER_ID"]
+          key = open(os.path.expanduser("~/.appstoreconnect/private_keys/AuthKey_%s.p8" % kid)).read()
+          tok = jwt.encode({"iss": iss, "iat": int(time.time()), "exp": int(time.time()) + 600, "aud": "appstoreconnect-v1"}, key, algorithm="ES256", headers={"kid": kid})
+          h = {"Authorization": "Bearer " + tok}
+          r = requests.get("https://api.appstoreconnect.apple.com/v1/certificates?filter[certificateType]=DEVELOPMENT&limit=200", headers=h, timeout=30)
+          r.raise_for_status()
+          certs = r.json().get("data", [])
+          print("development certificates:", len(certs))
+          for c in certs:
+              d = requests.delete("https://api.appstoreconnect.apple.com/v1/certificates/" + c["id"], headers=h, timeout=30)
+              print("revoked", c["id"], c["attributes"].get("displayName"), d.status_code)
+          PY
       - name: Archive (automatic signing via the API key)
         run: |
           xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
