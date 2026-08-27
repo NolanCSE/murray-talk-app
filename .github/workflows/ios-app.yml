@@ -43,8 +43,11 @@ jobs:
         run: |
           x=$(ls -d /Applications/Xcode*.app | sort -V | tail -1); sudo xcode-select -s "$x"; swift --version
       - name: swift test (MurrayCallCore)
-        working-directory: plugins/murray-call
-        run: swift test --filter MurrayCallCoreTests 2>&1 | tail -40
+        working-directory: plugins/murray-call/core
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee test.log | tail -40
+          grep -q "Executed [1-9][0-9]* tests, with 0 failures" test.log
 
   simulator:
     runs-on: macos-15
