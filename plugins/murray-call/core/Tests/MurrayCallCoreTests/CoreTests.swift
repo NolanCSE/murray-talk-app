@@ -86,6 +86,14 @@ final class AdaptiveGateTests: XCTestCase {
         XCTAssertEqual(e.level(0.015, at: 2020), .startTurn)
         XCTAssertEqual(e.state, .user)
     }
+    func testSensitivityMovesTheGate() {
+        var hi = Endpointer(), lo = Endpointer()
+        hi.tune(sensitivity: "high"); lo.tune(sensitivity: "low")
+        for t in stride(from: 0.0, through: 2000, by: 20) { _ = hi.level(0.002, at: t); _ = lo.level(0.002, at: t) }
+        XCTAssertLessThan(hi.startLevel, lo.startLevel)
+        XCTAssertEqual(hi.level(0.005, at: 2020), .startTurn)      // a murmur opens HIGH
+        XCTAssertEqual(lo.level(0.005, at: 2020), .none)           // but not LOW
+    }
     func testSpeechDoesNotLiftTheFloor() {
         var e = Endpointer()
         for t in stride(from: 0.0, through: 2000, by: 20) { _ = e.level(0.002, at: t) }

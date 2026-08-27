@@ -18,8 +18,8 @@ public struct EndpointerConfig: Equatable {
     // level follows the measured quiet floor instead: floor * startRatio,
     // never below minStart, never above `start`.
     public var adaptive: Bool = true
-    public var minStart: Float = 0.006
-    public var startRatio: Float = 3.5
+    public var minStart: Float = 0.003
+    public var startRatio: Float = 2.5
     public var stopRatio: Float = 0.6       // stop = start * stopRatio
     public init() {}
 }
@@ -69,6 +69,17 @@ public struct Endpointer {
 
     public init(config: EndpointerConfig = EndpointerConfig()) {
         self.config = config
+    }
+
+    /// The sensitivity setting: how far above the quiet floor speech must
+    /// rise. "high" opens for a murmur across the desk; "low" wants a clear
+    /// voice. Levels are post pre-gain (the engine boosts the raw mic).
+    public mutating func tune(sensitivity: String) {
+        switch sensitivity {
+        case "high": config.minStart = 0.002; config.startRatio = 1.8
+        case "low": config.minStart = 0.006; config.startRatio = 3.5
+        default: config.minStart = 0.003; config.startRatio = 2.5
+        }
     }
 
     /// External transitions the engine reports back.

@@ -23,6 +23,7 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "diag", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setRoute", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setSensitivity", returnType: CAPPluginReturnPromise),
     ]
 
     private var engine: CallEngine?
@@ -110,6 +111,13 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
         let on = call.getBool("speaker") ?? true
         if let e = engine { e.setSpeaker(on); call.resolve(e.routeInfo()) }
         else { UserDefaults.standard.set(on, forKey: "murray.speaker"); call.resolve(["kind": on ? "speaker" : "earpiece", "name": "", "speaker": on]) }
+    }
+    /// setSensitivity({level: "low"|"normal"|"high"}) — how quietly he can
+    /// be spoken to before a turn opens. Remembered; applied to a live call.
+    @objc func setSensitivity(_ call: CAPPluginCall) {
+        let level = call.getString("level") ?? "normal"
+        if let e = engine { e.setSensitivity(level) } else { UserDefaults.standard.set(level, forKey: "murray.sensitivity") }
+        call.resolve(["level": level])
     }
     @objc func nudge(_ call: CAPPluginCall) { engine?.nudge(call.getString("text") ?? ""); call.resolve() }
 

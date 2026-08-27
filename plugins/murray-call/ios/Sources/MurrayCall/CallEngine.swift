@@ -90,16 +90,36 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     func setSpeaker(_ on: Bool) {
         speaker = on
         UserDefaults.standard.set(on, forKey: "murray.speaker")
+        applyRoute()
+    }
+
+    /// Under CallKit the category is CallKit's and .defaultToSpeaker is
+    /// ignored: his voice came out of the top receiver (2026-08-27). The
+    /// port override is the one call that moves it, and it only sticks once
+    /// the session is active — so it runs at start and on every toggle.
+    private func applyRoute() {
         let s = AVAudioSession.sharedInstance()
-        do {
-            try s.setCategory(.playAndRecord, mode: .voiceChat, options: sessionOptions())
-            try s.overrideOutputAudioPort(on ? .speaker : .none)
-        } catch {
+        do { try s.overrideOutputAudioPort(speaker ? .speaker : .none) }
+        catch {
             lastError = "route: \(error.localizedDescription)"
             emit("error", ["where": "route", "why": error.localizedDescription])
         }
-        DispatchQueue.main.async { UIDevice.current.isProximityMonitoringEnabled = !on }
+        DispatchQueue.main.async { UIDevice.current.isProximityMonitoringEnabled = !self.speaker }
         emitRoute()
+    }
+
+    // MARK: microphone sensitivity
+
+    /// The raw iPhone microphone with voice processing off is quiet: normal
+    /// speech across a desk is a few thousandths of full scale, so he had
+    /// to shout (2026-08-27). A fixed +12 dB pre-gain lifts it before the
+    /// gate and before Scribe; the setting moves the gate itself.
+    private let micGain: Float = 4.0
+    var sensitivity: String = UserDefaults.standard.string(forKey: "murray.sensitivity") ?? "normal"
+    func setSensitivity(_ level: String) {
+        sensitivity = level
+        UserDefaults.standard.set(level, forKey: "murray.sensitivity")
+        lock.lock(); endpointer.tune(sensitivity: level); lock.unlock()
     }
 
     /// What the phone is actually playing through, for the call screen.
@@ -123,13 +143,12 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     func start(callId: String) throws {
         self.callId = callId
         endpointer = Endpointer()
+        endpointer.tune(sensitivity: sensitivity)
         turns = []
         try startInput()
         running = true
         emit("state", ["state": "listening"])
-        if !speaker { try? AVAudioSession.sharedInstance().overrideOutputAudioPort(.none) }
-        DispatchQueue.main.async { UIDevice.current.isProximityMonitoringEnabled = !self.speaker }
-        emitRoute()
+        applyRoute()
     }
 
     private func startInput() throws {
@@ -192,6 +211,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     // MARK: audio in
 
     private var convertErrors = 0
+    private var peakRms: Float = 0            // loudest post-gain level this call, for Diagnostics
     private var tapBuffers = 0
     private var tapFormat = ""
     // Off by default since 2026-08-27: with it ON the input tap never
@@ -212,7 +232,8 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             "running": running, "engineRunning": audio.isRunning,
             "tapBuffers": tapBuffers, "tapFormat": tapFormat, "levelTicks": levelTick,
             "convertErrors": convertErrors, "voiceProcessing": vpEnabled, "healed": healed,
-            "gateStart": endpointer.startLevel, "noiseFloor": endpointer.floor, "speaker": speaker,
+            "gateStart": endpointer.startLevel, "noiseFloor": endpointer.floor, "peakRms": peakRms,
+            "micGain": micGain, "sensitivity": sensitivity, "speaker": speaker,
             "inputFormat": "\(audio.inputNode.outputFormat(forBus: 0))",
             "inputVP": audio.inputNode.isVoiceProcessingEnabled,
             "category": s.category.rawValue, "mode": s.mode.rawValue,
@@ -259,10 +280,13 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             convertErrors += 1
             return
         }
-        let floats = UnsafeBufferPointer(start: ch, count: Int(out.frameLength))
-        let rms = WAV.rms(floats)
-        var ints = [Int16](repeating: 0, count: floats.count)
-        for i in 0..<floats.count { ints[i] = Int16(max(-1, min(1, floats[i])) * 32767) }
+        let raw = UnsafeBufferPointer(start: ch, count: Int(out.frameLength))
+        var boosted = [Float](repeating: 0, count: raw.count)
+        for i in 0..<raw.count { boosted[i] = max(-1, min(1, raw[i] * micGain)) }
+        let rms = boosted.withUnsafeBufferPointer { WAV.rms($0) }
+        peakRms = max(peakRms, rms)
+        var ints = [Int16](repeating: 0, count: boosted.count)
+        for i in 0..<boosted.count { ints[i] = Int16(boosted[i] * 32767) }
 
         lock.lock()
         if capturing {
