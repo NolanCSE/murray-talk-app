@@ -112,8 +112,8 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             guard let self = self, self.running, self.tapBuffers == mark, !self.healed else { return }
             self.healed = true
-            self.vpEnabled = false
-            self.lastError = "no mic buffers in 2s with voice processing on; restarted without it"
+            self.vpEnabled = !self.vpEnabled
+            self.lastError = "no mic buffers in 2s (voice processing \(self.vpEnabled ? "off" : "on")); restarted with it \(self.vpEnabled ? "on" : "off")"
             self.emit("error", ["where": "microphone", "why": self.lastError])
             self.stopInput()
             do { try self.startInput() } catch { self.emit("error", ["where": "microphone", "why": "restart failed: \(error.localizedDescription)"]) }
@@ -145,7 +145,12 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     private var convertErrors = 0
     private var tapBuffers = 0
     private var tapFormat = ""
-    private var vpEnabled = true
+    // Off by default since 2026-08-27: with it ON the input tap never
+    // delivered a buffer on his iPhone (the 2 s self-heal fired on every
+    // call); OFF it works at once. Without echo cancellation Murray's own
+    // voice would read as barge-in, so level barge-in is disabled in this
+    // mode — hold-to-talk still interrupts him.
+    private var vpEnabled = false
     private var healed = false
     private var lastError = ""
 
@@ -227,6 +232,12 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         switch action {
         case .none: return
         case .bargeIn:
+            if !vpEnabled && !endpointer.hold {
+                // No echo cancellation: that "speech" is probably his own
+                // speaker. Ignore level barge-in; hold-to-talk still works.
+                lock.lock(); endpointer.playbackStarted(at: CallEngine.now()); lock.unlock()
+                return
+            }
             stopPlayback()
             beginCapture()
         case .startTurn:
@@ -326,6 +337,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         lock.lock(); endpointer.replyDone(); let st = endpointer.state; lock.unlock()
         if queued == 0 { emit("state", ["state": st.rawValue]) }
         emit("doing", ["label": ""])
+        DispatchQueue.main.async { self.maybeHangUp() }
     }
 
     private func handle(_ f: SSEFrame) {
@@ -345,7 +357,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             }
         case "control":
             let type = obj["type"] as? String ?? ""
-            if type == "end_call" { emit("say", ["text": "", "why": ""]); DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.drainThenStop() } }
+            if type == "end_call" { stopAfterPlayback = true }      // after the stream AND the audio finish
             else if type == "progress" {
                 let label = (obj["label"] as? String ?? obj["tool"] as? String ?? "").replacingOccurrences(of: "_", with: " ")
                 emit("doing", ["label": (obj["status"] as? String) == "completed" ? "" : label])
@@ -359,8 +371,13 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     }
 
     private var stopAfterPlayback = false
-    private func drainThenStop() {
-        if queued == 0 { stop(reason: "murray hung up") } else { stopAfterPlayback = true }
+    private func maybeHangUp() {
+        // Only once the reply stream is over AND every clip has sounded:
+        // he was losing the last half-word of his goodbye (2026-08-27).
+        if stopAfterPlayback && turnTask == nil && queued == 0 {
+            stopAfterPlayback = false
+            stop(reason: "murray hung up")
+        }
     }
 
     // MARK: playback
@@ -377,7 +394,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             let first = self.queued == 0
             self.queued += 1
             self.clipFiles.append(url)
-            self.player.scheduleFile(file, at: nil) {
+            self.player.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { _ in
                 DispatchQueue.main.async { self.clipDone(url) }
             }
             if first {
@@ -398,7 +415,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             if turnTask == nil { endpointer.replyDone() }
             let st = endpointer.state; lock.unlock()
             emit("state", ["state": st.rawValue])
-            if stopAfterPlayback { stopAfterPlayback = false; stop(reason: "murray hung up") }
+            maybeHangUp()
         }
     }
 
