@@ -74,7 +74,7 @@ check("the template keeps its placeholder", "__TALK_URL__" in _index_before)
 plist = plistlib.loads((APP / "ios/App/App/Info.plist").read_bytes())
 check("microphone purpose string present",
       "listen" in plist.get("NSMicrophoneUsageDescription", "").lower())
-check("audio background mode declared", plist.get("UIBackgroundModes") == ["audio"])
+check("audio (and voip, for CallKit) background modes declared", set(plist.get("UIBackgroundModes") or []) >= {"audio"})
 ats = plist.get("NSAppTransportSecurity", {})
 check("ATS: local networking only, no arbitrary cleartext",
       ats.get("NSAllowsLocalNetworking") is True
