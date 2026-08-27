@@ -1,5 +1,6 @@
 import UIKit
 import Capacitor
+import AVFoundation
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -7,8 +8,27 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Override point for customization after application launch.
+        // Let music keep playing while Murray listens. WebKit takes a
+        // play-and-record session for getUserMedia; asking for mixWithOthers
+        // here is the cheap hypothesis (2026-08-27) — if WebKit overrides it,
+        // the fix is native capture (phase 2).
+        configureAudioSession()
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+        ) { _ in self.configureAudioSession() }
         return true
+    }
+
+    func configureAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playAndRecord, mode: .voiceChat,
+                                    options: [.mixWithOthers, .allowBluetooth,
+                                              .allowBluetoothA2DP, .defaultToSpeaker])
+            try session.setActive(true)
+        } catch {
+            print("audio session: \(error)")
+        }
     }
 
     func applicationWillResignActive(_ application: UIApplication) {
