@@ -3,16 +3,23 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Murray</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;900&display=swap" media="print" onload="this.media='all'">
 <style>
-  html,body{margin:0;height:100%;background:#0b0b0d;color:#e8e6e1;font:17px/1.45 -apple-system,system-ui,sans-serif}
-  main{min-height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;
-       padding:calc(env(safe-area-inset-top) + 24px) 28px calc(env(safe-area-inset-bottom) + 24px)}
-  h1{font-weight:600;font-size:22px;margin:0 0 10px}
-  p{margin:6px 0;color:#a9a6a0;max-width:30ch}
-  button{margin-top:26px;background:#2f6fed;color:#fff;border:0;border-radius:14px;padding:14px 26px;font-size:17px}
-</style></head><body><main>
-<h1>Can't reach Murray</h1>
-<p>The app talks to him over your tailnet only.</p>
-<p>Check that Tailscale is connected on this phone, then try again.</p>
-<button onclick="location.href='__TALK_URL__'">Try again</button>
-</main></body></html>
+  :root{--ink:#201e1d;--paper:#f3f2f2;--red:#ec3013;--f:"Archivo",system-ui,-apple-system,sans-serif}
+  html,body{margin:0;height:100%;background:var(--red);color:var(--paper);font-family:var(--f);-webkit-font-smoothing:antialiased}
+  body{display:flex;flex-direction:column;padding:calc(env(safe-area-inset-top) + 14px) 0 env(safe-area-inset-bottom)}
+  .mid{flex:1;display:flex;flex-direction:column;justify-content:center;padding:0 22px;gap:20px}
+  .big{font:900 60px/0.84 var(--f);letter-spacing:-0.045em}
+  .why{border-top:2px solid var(--paper);padding-top:14px;font:500 14px/1.5 var(--f);max-width:32ch}
+  .k{font:600 11px/1.7 var(--f);letter-spacing:.1em;opacity:.85}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:2px;background:rgba(243,242,242,.4)}
+  button{appearance:none;border:0;padding:24px 18px calc(24px + env(safe-area-inset-bottom));font:700 13px/1 var(--f);letter-spacing:.12em;text-align:left;font-family:var(--f)}
+  .no{background:var(--red);color:var(--paper)}.yes{background:var(--paper);color:var(--ink)}
+</style></head><body>
+<div class="mid">
+  <div class="big">CAN'T<br>REACH<br>HIM</div>
+  <div class="why">He only answers over your tailnet. Tailscale looks off on this phone.</div>
+  <div class="k">TAILSCALE · DISCONNECTED</div>
+</div>
+<div class="grid"><button class="no" onclick="location.reload()">NOT NOW</button><button class="yes" onclick="location.href='__TALK_URL__'">TRY AGAIN</button></div>
+</body></html>
