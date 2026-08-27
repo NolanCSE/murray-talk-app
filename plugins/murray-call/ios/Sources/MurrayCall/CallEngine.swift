@@ -89,7 +89,8 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         try? input.setVoiceProcessingEnabled(true)      // echo cancellation
         let fmt = input.outputFormat(forBus: 0)
         guard fmt.sampleRate > 0 else { throw NSError(domain: "MurrayCall", code: 1, userInfo: [NSLocalizedDescriptionKey: "no microphone input"]) }
-        converter = AVAudioConverter(from: fmt, to: targetFormat)
+        converter = nil                       // built from the first live buffer
+        convertErrors = 0
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [weak self] buf, _ in
             self?.consume(buf)
@@ -128,8 +129,21 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
 
     // MARK: audio in
 
+    private var convertErrors = 0
     private func consume(_ buf: AVAudioPCMBuffer) {
-        guard let conv = converter, running else { return }
+        guard running else { return }
+        // The converter follows the LIVE buffer format. Voice-processing IO
+        // renegotiates the microphone format once output goes live; a
+        // converter built at start then rejects every buffer, silently —
+        // "no audio captured (0 ms)", 2026-08-27.
+        if converter == nil || converter!.inputFormat != buf.format {
+            converter = AVAudioConverter(from: buf.format, to: targetFormat)
+            emit("doing", ["label": String(format: "mic %.0f Hz x%d", buf.format.sampleRate, buf.format.channelCount)])
+        }
+        guard let conv = converter else {
+            if convertErrors == 0 { emit("error", ["where": "microphone", "why": "no converter for \(buf.format)"]) }
+            convertErrors += 1; return
+        }
         let ratio = targetFormat.sampleRate / buf.format.sampleRate
         let outCap = AVAudioFrameCount(Double(buf.frameLength) * ratio) + 16
         guard let out = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outCap) else { return }
@@ -139,7 +153,13 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             if consumed { status.pointee = .noDataNow; return nil }
             consumed = true; status.pointee = .haveData; return buf
         }
-        guard err == nil, out.frameLength > 0, let ch = out.floatChannelData?[0] else { return }
+        guard err == nil, out.frameLength > 0, let ch = out.floatChannelData?[0] else {
+            if convertErrors == 0 {
+                emit("error", ["where": "microphone", "why": "audio conversion failed: \(err?.localizedDescription ?? "empty output") from \(buf.format)"])
+            }
+            convertErrors += 1
+            return
+        }
         let floats = UnsafeBufferPointer(start: ch, count: Int(out.frameLength))
         let rms = WAV.rms(floats)
         var ints = [Int16](repeating: 0, count: floats.count)
