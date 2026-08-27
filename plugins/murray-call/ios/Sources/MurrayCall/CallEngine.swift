@@ -4,7 +4,7 @@ import MurrayCallCore
 
 /// The whole call loop, natively: mic → endpointing → /turn → SSE → playback.
 /// The page is only a view of this. Events go out through `onEvent`.
-final class CallEngine: NSObject, URLSessionDataDelegate, AVAudioPlayerDelegate {
+final class CallEngine: NSObject, URLSessionDataDelegate {
     struct Turn { let who: String; let text: String }
 
     let base: URL                                   // https://…/talk/<secret>/
@@ -28,9 +28,18 @@ final class CallEngine: NSObject, URLSessionDataDelegate, AVAudioPlayerDelegate 
     private var sse = SSEParser()
     private var replyLine: String = ""
 
-    private var players: [AVAudioPlayer] = []       // playing + queued, in order
-    private var scheduledEnd: TimeInterval = 0      // device time the queue runs out (main thread)
+    // Playback: a player node through an EQ with a gain stage, on the same
+    // engine as the microphone. AVAudioPlayer had no gain at all and the
+    // .voiceChat session mode runs output through voice processing, which
+    // is markedly quieter than media playback — "he gets too quiet,
+    // especially with music on" (2026-08-27).
+    private let player = AVAudioPlayerNode()
+    private let eq = AVAudioUnitEQ(numberOfBands: 1)
+    private var playbackWired = false
+    private var queued = 0                          // clips scheduled and not yet finished
+    private var clipFiles: [URL] = []
     private var playbackStartedAt: Double = 0
+    var gainDb: Float = 8 { didSet { eq.globalGain = max(-24, min(24, gainDb)) } }
     private(set) var running = false
 
     init(base: URL) {
@@ -55,7 +64,10 @@ final class CallEngine: NSObject, URLSessionDataDelegate, AVAudioPlayerDelegate 
         // mixWithOthers + duckOthers is the ask; under CallKit iOS may
         // still interrupt other audio like a phone call — verified on the
         // phone, not assumed.
-        try s.setCategory(.playAndRecord, mode: .voiceChat,
+        // .videoChat keeps echo cancellation but drives the loudspeaker at
+        // media level; .voiceChat is tuned for the earpiece and comes out
+        // quiet through the speaker.
+        try s.setCategory(.playAndRecord, mode: .videoChat,
                           options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker,
                                     .mixWithOthers, .duckOthers])
         try s.setPreferredSampleRate(48000)
@@ -80,6 +92,14 @@ final class CallEngine: NSObject, URLSessionDataDelegate, AVAudioPlayerDelegate 
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [weak self] buf, _ in
             self?.consume(buf)
+        }
+        if !playbackWired {
+            audio.attach(player); audio.attach(eq)
+            eq.globalGain = gainDb
+            let fmt = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)
+            audio.connect(player, to: eq, format: fmt)
+            audio.connect(eq, to: audio.mainMixerNode, format: fmt)
+            playbackWired = true
         }
         audio.prepare()
         try audio.start()
@@ -228,7 +248,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate, AVAudioPlayerDelegate 
         }
         if !replyLine.isEmpty { turns.append(Turn(who: "murray", text: replyLine)); replyLine = "" }
         lock.lock(); endpointer.replyDone(); let st = endpointer.state; lock.unlock()
-        if players.isEmpty { emit("state", ["state": st.rawValue]) }
+        if queued == 0 { emit("state", ["state": st.rawValue]) }
         emit("doing", ["label": ""])
     }
 
@@ -264,56 +284,59 @@ final class CallEngine: NSObject, URLSessionDataDelegate, AVAudioPlayerDelegate 
 
     private var stopAfterPlayback = false
     private func drainThenStop() {
-        if players.isEmpty { stop(reason: "murray hung up") } else { stopAfterPlayback = true }
+        if queued == 0 { stop(reason: "murray hung up") } else { stopAfterPlayback = true }
     }
 
     // MARK: playback
 
     private func enqueue(_ mp3: Data) {
-        guard running, let p = try? AVAudioPlayer(data: mp3) else { return }
-        p.delegate = self
-        p.prepareToPlay()
+        guard running else { return }
+        // AVAudioFile reads from disk; a clip is a few tens of KB.
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("murray-\(UUID().uuidString).mp3")
+        do { try mp3.write(to: url) } catch { return }
+        guard let file = try? AVAudioFile(forReading: url) else { try? FileManager.default.removeItem(at: url); return }
         DispatchQueue.main.async {
-            // One clock for the whole queue. Timing off "the last player, if
-            // it is playing" let a third sentence start on top of the first
-            // whenever the second had not begun yet (2026-08-27: he talked
-            // over himself).
-            let now = p.deviceCurrentTime
-            let first = self.players.isEmpty
-            let at = max(now + (first ? 0.12 : 0.02), self.scheduledEnd)   // LEAD_S on the first
-            p.play(atTime: at)
-            self.scheduledEnd = at + p.duration
+            if !self.audio.isRunning { try? self.audio.start() }
+            let first = self.queued == 0
+            self.queued += 1
+            self.clipFiles.append(url)
+            self.player.scheduleFile(file, at: nil) {
+                DispatchQueue.main.async { self.clipDone(url) }
+            }
             if first {
                 self.playbackStartedAt = CallEngine.now()
                 self.lock.lock(); self.endpointer.playbackStarted(at: self.playbackStartedAt); self.lock.unlock()
                 self.emit("state", ["state": "speaking"])
+                if !self.player.isPlaying { self.player.play() }
             }
-            self.players.append(p)
         }
     }
 
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        DispatchQueue.main.async {
-            self.players.removeAll { $0 === player }
-            if self.players.isEmpty {
-                self.scheduledEnd = 0
-                self.lock.lock(); self.endpointer.playbackStopped()
-                if self.turnTask == nil { self.endpointer.replyDone() }
-                let st = self.endpointer.state; self.lock.unlock()
-                self.emit("state", ["state": st.rawValue])
-                if self.stopAfterPlayback { self.stopAfterPlayback = false; self.stop(reason: "murray hung up") }
-            }
+    private func clipDone(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
+        clipFiles.removeAll { $0 == url }
+        queued = max(0, queued - 1)
+        if queued == 0 {
+            lock.lock(); endpointer.playbackStopped()
+            if turnTask == nil { endpointer.replyDone() }
+            let st = endpointer.state; lock.unlock()
+            emit("state", ["state": st.rawValue])
+            if stopAfterPlayback { stopAfterPlayback = false; stop(reason: "murray hung up") }
         }
     }
 
     private func stopPlayback() {
         DispatchQueue.main.async {
-            for p in self.players { p.delegate = nil; p.stop() }
-            self.players = []
-            self.scheduledEnd = 0
+            self.player.stop()                       // drops every scheduled clip
+            for u in self.clipFiles { try? FileManager.default.removeItem(at: u) }
+            self.clipFiles = []
+            self.queued = 0
         }
         lock.lock(); endpointer.playbackStopped(); lock.unlock()
     }
+
+    var isPlaying: Bool { queued > 0 }
 
     // MARK: interruptions
 

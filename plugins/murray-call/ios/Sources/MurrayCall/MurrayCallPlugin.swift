@@ -18,6 +18,7 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "holdEnd", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "sync", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "nudge", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
     ]
 
     private var engine: CallEngine?
@@ -40,6 +41,7 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let base = baseURL() else { call.reject("no talk url in the app config"); return }
         let useCallKit = call.getBool("callkit") ?? true
         let e = CallEngine(base: base)
+        e.gainDb = Float(UserDefaults.standard.object(forKey: "murray.gainDb") as? Double ?? 8)
         e.onEvent = { [weak self] name, data in
             self?.recent.push(name, data)
             self?.notifyListeners(name, data: data)
@@ -85,6 +87,13 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
     }
     @objc func holdStart(_ call: CAPPluginCall) { engine?.holdStart(); call.resolve() }
     @objc func holdEnd(_ call: CAPPluginCall) { engine?.holdEnd(); call.resolve() }
+    @objc func setVolume(_ call: CAPPluginCall) {
+        // dB of gain on Murray's voice: 0 = as mastered, +8 default, +16 loud.
+        let db = Float(call.getDouble("db") ?? 8)
+        UserDefaults.standard.set(Double(db), forKey: "murray.gainDb")
+        engine?.gainDb = db
+        call.resolve(["db": db])
+    }
     @objc func nudge(_ call: CAPPluginCall) { engine?.nudge(call.getString("text") ?? ""); call.resolve() }
 
     @objc func sync(_ call: CAPPluginCall) {
