@@ -134,7 +134,7 @@ jobs:
         # certificate, and Apple caps those; run 33088338601 died on
         # "maximum number of certificates". Distribution certs are untouched.
         run: |
-          python3 -m pip install --quiet "PyJWT[crypto]" requests
+          python3 -m pip install --quiet --break-system-packages "PyJWT[crypto]" requests   # the runner is disposable
           python3 - <<'PY'
           import os, time, jwt, requests
           kid, iss = os.environ["ASC_KEY_ID"], os.environ["ASC_ISSUER_ID"]
