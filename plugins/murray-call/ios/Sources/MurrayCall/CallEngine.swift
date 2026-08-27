@@ -156,7 +156,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         lock.unlock()
         apply(action)
         levelTick += 1
-        if levelTick % 4 == 0 { emit("level", ["rms": rms, "state": endpointer.state.rawValue, "capturing": capturing, "playing": queued > 0]) }
+        if levelTick % 4 == 0 { emit("level", ["rms": rms, "state": endpointer.state.rawValue, "capturing": capturing, "playing": queued > 0, "taps": levelTick]) }
     }
 
     private func apply(_ action: EndpointerAction) {
@@ -188,7 +188,18 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         let samples = pcm; pcm = []
         lock.unlock()
         if send {
+            // Under 150 ms there is nothing to hear; Scribe calls that
+            // "corrupted" (2026-08-27) and the real fault — a microphone
+            // that stopped delivering — went unnamed.
+            if samples.count < 2400 {
+                emit("error", ["where": "capturing",
+                               "why": "no audio captured (%d ms) — the microphone is not delivering; try End and start again".replacingOccurrences(of: "%d", with: String(samples.count / 16))])
+                lock.lock(); endpointer.replyDone(); let st = endpointer.state; lock.unlock()
+                emit("state", ["state": st.rawValue])
+                return
+            }
             emit("state", ["state": "thinking"])
+            emit("doing", ["label": "sending \(samples.count / 16) ms"])
             upload(WAV.encode(pcm16: samples, sampleRate: 16000))
         } else {
             emit("state", ["state": endpointer.state.rawValue])
