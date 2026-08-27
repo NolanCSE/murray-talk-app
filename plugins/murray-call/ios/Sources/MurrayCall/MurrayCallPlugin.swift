@@ -19,6 +19,7 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "sync", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "nudge", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "diag", returnType: CAPPluginReturnPromise),
     ]
 
     private var engine: CallEngine?
@@ -87,6 +88,11 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
     }
     @objc func holdStart(_ call: CAPPluginCall) { engine?.holdStart(); call.resolve() }
     @objc func holdEnd(_ call: CAPPluginCall) { engine?.holdEnd(); call.resolve() }
+    @objc func diag(_ call: CAPPluginCall) {
+        var d: [String: Any] = engine?.diagnostics() ?? ["running": false, "note": "no engine (call not started)"]
+        d["permission"] = "\(AVAudioSession.sharedInstance().recordPermission.rawValue)"
+        call.resolve(d)
+    }
     @objc func setVolume(_ call: CAPPluginCall) {
         // dB of gain on Murray's voice: 0 = as mastered, +8 default, +16 loud.
         let db = Float(call.getDouble("db") ?? 8)

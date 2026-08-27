@@ -86,7 +86,8 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
 
     private func startInput() throws {
         let input = audio.inputNode
-        try? input.setVoiceProcessingEnabled(true)      // echo cancellation
+        if vpEnabled { try? input.setVoiceProcessingEnabled(true) }      // echo cancellation
+        else { try? input.setVoiceProcessingEnabled(false) }
         let fmt = input.outputFormat(forBus: 0)
         guard fmt.sampleRate > 0 else { throw NSError(domain: "MurrayCall", code: 1, userInfo: [NSLocalizedDescriptionKey: "no microphone input"]) }
         converter = nil                       // built from the first live buffer
@@ -105,6 +106,18 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         }
         audio.prepare()
         try audio.start()
+        // Self-heal: no buffers within 2 s means the tap is dead. Try once
+        // more without voice processing, and say so.
+        let mark = tapBuffers
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self = self, self.running, self.tapBuffers == mark, !self.healed else { return }
+            self.healed = true
+            self.vpEnabled = false
+            self.lastError = "no mic buffers in 2s with voice processing on; restarted without it"
+            self.emit("error", ["where": "microphone", "why": self.lastError])
+            self.stopInput()
+            do { try self.startInput() } catch { self.emit("error", ["where": "microphone", "why": "restart failed: \(error.localizedDescription)"]) }
+        }
     }
 
     private func stopInput() {
@@ -130,7 +143,38 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     // MARK: audio in
 
     private var convertErrors = 0
+    private var tapBuffers = 0
+    private var tapFormat = ""
+    private var vpEnabled = true
+    private var healed = false
+    private var lastError = ""
+
+    /// Everything the phone knows about its own microphone, for the page's
+    /// Diag button. Built after three blind builds on 2026-08-27.
+    func diagnostics() -> [String: Any] {
+        let s = AVAudioSession.sharedInstance()
+        let route = s.currentRoute
+        return [
+            "running": running, "engineRunning": audio.isRunning,
+            "tapBuffers": tapBuffers, "tapFormat": tapFormat, "levelTicks": levelTick,
+            "convertErrors": convertErrors, "voiceProcessing": vpEnabled, "healed": healed,
+            "inputFormat": "\(audio.inputNode.outputFormat(forBus: 0))",
+            "inputVP": audio.inputNode.isVoiceProcessingEnabled,
+            "category": s.category.rawValue, "mode": s.mode.rawValue,
+            "sampleRate": s.sampleRate, "ioBuffer": s.ioBufferDuration,
+            "inputs": route.inputs.map { "\($0.portType.rawValue):\($0.portName)" },
+            "outputs": route.outputs.map { "\($0.portType.rawValue):\($0.portName)" },
+            "availableInputs": (s.availableInputs ?? []).map { $0.portType.rawValue },
+            "recordPermission": "\(s.recordPermission.rawValue)",
+            "otherAudioPlaying": s.isOtherAudioPlaying,
+            "state": endpointer.state.rawValue, "capturing": capturing,
+            "queued": queued, "callId": callId, "lastError": lastError,
+        ]
+    }
+
     private func consume(_ buf: AVAudioPCMBuffer) {
+        tapBuffers += 1
+        if tapFormat.isEmpty { tapFormat = "\(buf.format)" }
         guard running else { return }
         // The converter follows the LIVE buffer format. Voice-processing IO
         // renegotiates the microphone format once output goes live; a
