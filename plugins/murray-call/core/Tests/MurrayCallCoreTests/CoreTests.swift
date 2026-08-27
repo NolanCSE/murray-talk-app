@@ -56,6 +56,15 @@ final class EndpointerTests: XCTestCase {
         XCTAssertEqual(e.holdStart(at: 20), .startTurn)   // hold still works while muted
     }
 
+    func testTextTurnFromListening() {
+        var e = Endpointer()
+        e.turnSent()                                  // a nudge, no mic involved
+        XCTAssertEqual(e.state, .thinking)
+        XCTAssertEqual(e.level(0.9, at: 10), .none)
+        e.replyDone()
+        XCTAssertEqual(e.state, .listening)
+    }
+
     func testThinkingIgnoresLevels() {
         var e = Endpointer()
         _ = e.holdStart(at: 0); _ = e.holdEnd(at: 1000)

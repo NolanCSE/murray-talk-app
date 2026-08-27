@@ -192,13 +192,22 @@ final class CallEngine: NSObject, URLSessionDataDelegate, AVAudioPlayerDelegate 
 
     // MARK: turn upload + SSE
 
-    private func upload(_ wav: Data) {
+    /// A text turn — no microphone, no transcript line. Used right after an
+    /// approval card is decided on the page so Murray acknowledges it now.
+    func nudge(_ text: String) {
+        guard running, turnTask == nil else { return }
+        lock.lock(); endpointer.turnSent(); lock.unlock()
+        emit("state", ["state": "thinking"])
+        upload(Data(text.utf8), mime: "text/plain")
+    }
+
+    private func upload(_ body: Data, mime: String = "audio/wav") {
         var req = URLRequest(url: base.appendingPathComponent("turn"))
         req.httpMethod = "POST"
         req.setValue(callId, forHTTPHeaderField: "X-Talk-Call")
-        req.setValue("audio/wav", forHTTPHeaderField: "X-Talk-Mime")
+        req.setValue(mime, forHTTPHeaderField: "X-Talk-Mime")
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        req.httpBody = wav
+        req.httpBody = body
         sse = SSEParser(); replyLine = ""
         turnTask?.cancel()
         let task = session.dataTask(with: req)

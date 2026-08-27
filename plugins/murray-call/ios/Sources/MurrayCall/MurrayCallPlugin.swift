@@ -17,6 +17,7 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "holdStart", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "holdEnd", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "sync", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "nudge", returnType: CAPPluginReturnPromise),
     ]
 
     private var engine: CallEngine?
@@ -84,6 +85,7 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
     }
     @objc func holdStart(_ call: CAPPluginCall) { engine?.holdStart(); call.resolve() }
     @objc func holdEnd(_ call: CAPPluginCall) { engine?.holdEnd(); call.resolve() }
+    @objc func nudge(_ call: CAPPluginCall) { engine?.nudge(call.getString("text") ?? ""); call.resolve() }
 
     @objc func sync(_ call: CAPPluginCall) {
         var out: [String: Any] = engine?.snapshot() ?? ["state": "ended", "callId": "", "turns": []]

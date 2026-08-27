@@ -41,7 +41,7 @@ public struct Endpointer {
     }
 
     /// External transitions the engine reports back.
-    public mutating func turnSent() { if state == .user { state = .thinking } }
+    public mutating func turnSent() { if state == .user || state == .listening || state == .muted { state = .thinking } }
     public mutating func replyDone() { if state == .thinking || state == .speaking { state = muted ? .muted : .listening } }
     public mutating func playbackStarted(at t: Double) { playbackBeganAt = t; if state != .user { state = .speaking } }
     public mutating func playbackStopped() { if state == .speaking { state = .listening } }
