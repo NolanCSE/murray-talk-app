@@ -64,10 +64,11 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         // mixWithOthers + duckOthers is the ask; under CallKit iOS may
         // still interrupt other audio like a phone call — verified on the
         // phone, not assumed.
-        // .videoChat keeps echo cancellation but drives the loudspeaker at
-        // media level; .voiceChat is tuned for the earpiece and comes out
-        // quiet through the speaker.
-        try s.setCategory(.playAndRecord, mode: .videoChat,
+        // .voiceChat: the mode the mic is known to work under. .videoChat was
+        // tried for loudness on 2026-08-27 and the microphone stopped being
+        // heard after the first playback; loudness comes from the gain stage
+        // instead.
+        try s.setCategory(.playAndRecord, mode: .voiceChat,
                           options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker,
                                     .mixWithOthers, .duckOthers])
         try s.setPreferredSampleRate(48000)
@@ -155,7 +156,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         lock.unlock()
         apply(action)
         levelTick += 1
-        if levelTick % 4 == 0 { emit("level", ["rms": rms]) }   // ~4/s is plenty for a meter
+        if levelTick % 4 == 0 { emit("level", ["rms": rms, "state": endpointer.state.rawValue, "capturing": capturing, "playing": queued > 0]) }
     }
 
     private func apply(_ action: EndpointerAction) {
