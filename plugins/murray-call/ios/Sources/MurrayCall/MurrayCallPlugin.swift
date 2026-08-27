@@ -91,6 +91,7 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func diag(_ call: CAPPluginCall) {
         var d: [String: Any] = engine?.diagnostics() ?? ["running": false, "note": "no engine (call not started)"]
         d["permission"] = "\(AVAudioSession.sharedInstance().recordPermission.rawValue)"
+        d["build"] = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
         call.resolve(d)
     }
     @objc func setVolume(_ call: CAPPluginCall) {
