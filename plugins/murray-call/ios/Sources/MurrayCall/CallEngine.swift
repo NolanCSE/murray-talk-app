@@ -234,6 +234,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             "convertErrors": convertErrors, "voiceProcessing": vpEnabled, "healed": healed,
             "gateStart": endpointer.startLevel, "noiseFloor": endpointer.floor, "peakRms": peakRms,
             "micGain": micGain, "sensitivity": sensitivity, "speaker": speaker,
+            "routeReason": lastRouteReason, "playing": endpointer.playing,
             "inputFormat": "\(audio.inputNode.outputFormat(forBus: 0))",
             "inputVP": audio.inputNode.isVoiceProcessingEnabled,
             "category": s.category.rawValue, "mode": s.mode.rawValue,
@@ -408,7 +409,13 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             emit("error", ["where": "turn", "why": e.localizedDescription])
         }
         if !replyLine.isEmpty { turns.append(Turn(who: "murray", text: replyLine)); replyLine = "" }
-        lock.lock(); endpointer.replyDone(); let st = endpointer.state; lock.unlock()
+        // The stream ending is not the audio ending: only with nothing queued
+        // does the gate open here; otherwise clipDone opens it after the
+        // last clip has sounded (he heard himself otherwise, 2026-08-27).
+        lock.lock()
+        if queued == 0 { endpointer.playbackStopped(at: CallEngine.now()) }
+        endpointer.replyDone()
+        let st = endpointer.state; lock.unlock()
         if queued == 0 { emit("state", ["state": st.rawValue]) }
         emit("doing", ["label": ""])
         DispatchQueue.main.async { self.maybeHangUp() }
@@ -485,8 +492,10 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         clipFiles.removeAll { $0 == url }
         queued = max(0, queued - 1)
         if queued == 0 {
-            lock.lock(); endpointer.playbackStopped()
-            if turnTask == nil { endpointer.replyDone() }
+            // Between clips of one reply the stream is still open: stay
+            // "speaking" (gate shut) — the next clip is on its way.
+            guard turnTask == nil else { maybeHangUp(); return }
+            lock.lock(); endpointer.playbackStopped(at: CallEngine.now()); endpointer.replyDone()
             let st = endpointer.state; lock.unlock()
             emit("state", ["state": st.rawValue])
             maybeHangUp()
@@ -500,7 +509,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             self.clipFiles = []
             self.queued = 0
         }
-        lock.lock(); endpointer.playbackStopped(); lock.unlock()
+        lock.lock(); endpointer.playbackStopped(at: CallEngine.now()); lock.unlock()
     }
 
     var isPlaying: Bool { queued > 0 }
@@ -525,11 +534,23 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         }
     }
 
+    private var lastRouteReason = ""
     @objc private func routeChanged(_ n: Notification) {
         guard running else { return }
+        let raw = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
+        let reason = AVAudioSession.RouteChangeReason(rawValue: raw) ?? .unknown
+        lastRouteReason = "\(reason.rawValue)"
         DispatchQueue.main.async {
             self.stopInput()
             try? self.startInput()
+            // iOS (CallKit, a category change, the engine restarting) can
+            // put a phone call back on the top receiver; if SPEAKER is on
+            // and that happened, ask again — once per change, so an
+            // override that fails cannot loop.
+            let out = AVAudioSession.sharedInstance().currentRoute.outputs.first?.portType
+            if self.speaker && out == .builtInReceiver && reason != .override {
+                try? AVAudioSession.sharedInstance().overrideOutputAudioPort(.speaker)
+            }
             self.emitRoute()
         }
     }

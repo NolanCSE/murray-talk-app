@@ -21,6 +21,7 @@ public struct EndpointerConfig: Equatable {
     public var minStart: Float = 0.003
     public var startRatio: Float = 2.5
     public var stopRatio: Float = 0.6       // stop = start * stopRatio
+    public var tailMs: Double = 700          // after his audio stops, ignore the room's reverb this long
     public init() {}
 }
 
@@ -44,6 +45,12 @@ public struct Endpointer {
     private var turnBeganAt: Double = 0
     private var quietSince: Double = 0
     private var playbackBeganAt: Double = 0
+    /// True while his audio is coming out of the speaker. Without echo
+    /// cancellation the gate must stay shut for as long as that is true —
+    /// the reply stream ending is NOT the audio ending (2026-08-27: he
+    /// heard himself, because replyDone() opened the gate mid-playback).
+    public private(set) var playing = false
+    private var quietUntil: Double = 0
     /// Quiet-room RMS, tracked while nobody is talking. Starts where the
     /// fixed thresholds were so the first second behaves as before.
     public private(set) var floor: Float = 0.030 / 3.5
@@ -84,9 +91,15 @@ public struct Endpointer {
 
     /// External transitions the engine reports back.
     public mutating func turnSent() { if state == .user || state == .listening || state == .muted { state = .thinking } }
-    public mutating func replyDone() { if state == .thinking || state == .speaking { state = muted ? .muted : .listening } }
-    public mutating func playbackStarted(at t: Double) { playbackBeganAt = t; if state != .user { state = .speaking } }
-    public mutating func playbackStopped() { if state == .speaking { state = .listening } }
+    public mutating func replyDone() {
+        if state == .thinking || (state == .speaking && !playing) { state = muted ? .muted : .listening }
+    }
+    public mutating func playbackStarted(at t: Double) { playbackBeganAt = t; playing = true; if state != .user { state = .speaking } }
+    public mutating func playbackStopped(at t: Double = 0) {
+        playing = false
+        quietUntil = t + config.tailMs
+        if state == .speaking { state = muted ? .muted : .listening }
+    }
     public mutating func end() { state = .ended }
 
     public mutating func setMuted(_ on: Bool, at t: Double) -> EndpointerAction {
@@ -124,6 +137,7 @@ public struct Endpointer {
             return .none
         case .listening:
             if hold { return .none }
+            if t < quietUntil { return .none }           // his reverb tail, not you
             if rms <= startLevel { track(rms) }
             if rms > startLevel { state = .user; turnBeganAt = t; quietSince = t; return .startTurn }
             return .none

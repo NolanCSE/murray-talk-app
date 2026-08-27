@@ -75,6 +75,31 @@ final class EndpointerTests: XCTestCase {
     }
 }
 
+final class EchoGuardTests: XCTestCase {
+    func testStreamEndingDoesNotOpenTheGateWhileAudioPlays() {
+        var e = Endpointer()
+        _ = e.holdStart(at: 0); _ = e.holdEnd(at: 1000)      // a turn was sent
+        e.playbackStarted(at: 1500)                           // first clip sounds
+        e.replyDone()                                         // the SSE stream is over, audio still queued
+        XCTAssertEqual(e.state, .speaking)
+        XCTAssertEqual(e.level(0.5, at: 3000), .none)        // his own voice, loud: ignored
+        e.playbackStopped(at: 4000)
+        XCTAssertEqual(e.state, .listening)
+    }
+    func testReverbTailAfterPlaybackIsIgnored() {
+        var e = Endpointer()
+        e.playbackStarted(at: 0)
+        e.playbackStopped(at: 2000)
+        XCTAssertEqual(e.level(0.5, at: 2300), .none)        // inside the tail
+        XCTAssertEqual(e.level(0.5, at: 2800), .startTurn)   // you, after it
+    }
+    func testTextOnlyReplyStillReturnsToListening() {
+        var e = Endpointer()
+        e.turnSent(); e.replyDone()
+        XCTAssertEqual(e.state, .listening)
+    }
+}
+
 final class AdaptiveGateTests: XCTestCase {
     func testQuietRoomLowersTheStartLevel() {
         var e = Endpointer()
