@@ -29,6 +29,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate, AVAudioPlayerDelegate 
     private var replyLine: String = ""
 
     private var players: [AVAudioPlayer] = []       // playing + queued, in order
+    private var scheduledEnd: TimeInterval = 0      // device time the queue runs out (main thread)
     private var playbackStartedAt: Double = 0
     private(set) var running = false
 
@@ -264,11 +265,16 @@ final class CallEngine: NSObject, URLSessionDataDelegate, AVAudioPlayerDelegate 
         p.delegate = self
         p.prepareToPlay()
         DispatchQueue.main.async {
-            if let last = self.players.last, last.isPlaying {
-                let at = last.deviceCurrentTime + max(0, last.duration - last.currentTime)
-                p.play(atTime: at)
-            } else {
-                p.play(atTime: p.deviceCurrentTime + 0.12)          // LEAD_S
+            // One clock for the whole queue. Timing off "the last player, if
+            // it is playing" let a third sentence start on top of the first
+            // whenever the second had not begun yet (2026-08-27: he talked
+            // over himself).
+            let now = p.deviceCurrentTime
+            let first = self.players.isEmpty
+            let at = max(now + (first ? 0.12 : 0.02), self.scheduledEnd)   // LEAD_S on the first
+            p.play(atTime: at)
+            self.scheduledEnd = at + p.duration
+            if first {
                 self.playbackStartedAt = CallEngine.now()
                 self.lock.lock(); self.endpointer.playbackStarted(at: self.playbackStartedAt); self.lock.unlock()
                 self.emit("state", ["state": "speaking"])
@@ -281,6 +287,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate, AVAudioPlayerDelegate 
         DispatchQueue.main.async {
             self.players.removeAll { $0 === player }
             if self.players.isEmpty {
+                self.scheduledEnd = 0
                 self.lock.lock(); self.endpointer.playbackStopped()
                 if self.turnTask == nil { self.endpointer.replyDone() }
                 let st = self.endpointer.state; self.lock.unlock()
@@ -294,6 +301,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate, AVAudioPlayerDelegate 
         DispatchQueue.main.async {
             for p in self.players { p.delegate = nil; p.stop() }
             self.players = []
+            self.scheduledEnd = 0
         }
         lock.lock(); endpointer.playbackStopped(); lock.unlock()
     }
