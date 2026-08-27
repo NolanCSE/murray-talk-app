@@ -12,6 +12,15 @@ public struct EndpointerConfig: Equatable {
     public var maxMs: Double = 20000         // a turn never runs longer
     public var minMs: Double = 600           // shorter than this is a cough
     public var bargeGraceMs: Double = 600    // ignore "speech" this soon after playback starts (echo)
+    // Adaptive gate. The raw iPhone microphone (no AGC, voice processing
+    // off) speaks at a fraction of the browser's auto-gained level, so a
+    // fixed 0.030 only ever opened for hold-to-talk (2026-08-27). The start
+    // level follows the measured quiet floor instead: floor * startRatio,
+    // never below minStart, never above `start`.
+    public var adaptive: Bool = true
+    public var minStart: Float = 0.006
+    public var startRatio: Float = 3.5
+    public var stopRatio: Float = 0.6       // stop = start * stopRatio
     public init() {}
 }
 
@@ -35,6 +44,28 @@ public struct Endpointer {
     private var turnBeganAt: Double = 0
     private var quietSince: Double = 0
     private var playbackBeganAt: Double = 0
+    /// Quiet-room RMS, tracked while nobody is talking. Starts where the
+    /// fixed thresholds were so the first second behaves as before.
+    public private(set) var floor: Float = 0.030 / 3.5
+
+    /// The level that opens a turn right now.
+    public var startLevel: Float {
+        guard config.adaptive else { return config.start }
+        return min(config.start, max(config.minStart, floor * config.startRatio))
+    }
+    /// Below this he has gone quiet.
+    public var stopLevel: Float {
+        guard config.adaptive else { return config.stop }
+        return startLevel * config.stopRatio
+    }
+
+    /// Follow the floor: quickly down, slowly up, so speech does not lift it.
+    private mutating func track(_ rms: Float) {
+        guard config.adaptive else { return }
+        let k: Float = rms < floor ? 0.2 : 0.01
+        floor += (rms - floor) * k
+        floor = max(floor, 0.0005)
+    }
 
     public init(config: EndpointerConfig = EndpointerConfig()) {
         self.config = config
@@ -78,23 +109,25 @@ public struct Endpointer {
         case .ended, .thinking:
             return .none
         case .muted:
+            track(rms)
             return .none
         case .listening:
             if hold { return .none }
-            if rms > config.start { state = .user; turnBeganAt = t; quietSince = t; return .startTurn }
+            if rms <= startLevel { track(rms) }
+            if rms > startLevel { state = .user; turnBeganAt = t; quietSince = t; return .startTurn }
             return .none
         case .speaking:
             if hold { return .none }
             // Barge-in: his voice over Murray's, but not the echo of Murray's
             // own opening, which arrives inside the grace window.
-            if rms > config.start && t - playbackBeganAt > config.bargeGraceMs {
+            if rms > startLevel && t - playbackBeganAt > config.bargeGraceMs {
                 state = .user; turnBeganAt = t; quietSince = t
                 return .bargeIn
             }
             return .none
         case .user:
             if hold { return .none }
-            if rms > config.stop { quietSince = t }
+            if rms > stopLevel { quietSince = t }
             if t - turnBeganAt >= config.maxMs { return endTurnNow(at: t) }
             if t - quietSince >= config.quietMs { return endTurnNow(at: t) }
             return .none

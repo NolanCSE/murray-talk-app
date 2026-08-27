@@ -3,9 +3,11 @@ import Capacitor
 import AVFoundation
 
 /// window.Capacitor.Plugins.MurrayCall — the page's handle on the native call.
-/// Methods: start({callkit?}), end, setMuted({on}), holdStart, holdEnd, sync.
+/// Methods: start({callkit?}), end, setMuted({on}), holdStart, holdEnd, sync,
+/// nudge({text}), setVolume({db}), diag, setRoute({speaker}).
 /// Events: state {state}, heard {text, empty?}, say {text, why}, doing
-/// {label}, error {where, why}, ended {reason}, level {rms}.
+/// {label}, error {where, why}, ended {reason}, level {rms, start, floor},
+/// route {kind, name, speaker}.
 @objc(MurrayCallPlugin)
 public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "MurrayCallPlugin"
@@ -20,6 +22,7 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "nudge", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "diag", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setRoute", returnType: CAPPluginReturnPromise),
     ]
 
     private var engine: CallEngine?
@@ -100,6 +103,13 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
         UserDefaults.standard.set(Double(db), forKey: "murray.gainDb")
         engine?.gainDb = db
         call.resolve(["db": db])
+    }
+    /// setRoute({speaker: true|false}) — speaker or earpiece. Remembered
+    /// for the next call; applied at once if one is running.
+    @objc func setRoute(_ call: CAPPluginCall) {
+        let on = call.getBool("speaker") ?? true
+        if let e = engine { e.setSpeaker(on); call.resolve(e.routeInfo()) }
+        else { UserDefaults.standard.set(on, forKey: "murray.speaker"); call.resolve(["kind": on ? "speaker" : "earpiece", "name": "", "speaker": on]) }
     }
     @objc func nudge(_ call: CAPPluginCall) { engine?.nudge(call.getString("text") ?? ""); call.resolve() }
 

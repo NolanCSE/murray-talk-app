@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import UIKit
 import MurrayCallCore
 
 /// The whole call loop, natively: mic → endpointing → /turn → SSE → playback.
@@ -68,12 +69,56 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         // tried for loudness on 2026-08-27 and the microphone stopped being
         // heard after the first playback; loudness comes from the gain stage
         // instead.
-        try s.setCategory(.playAndRecord, mode: .voiceChat,
-                          options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker,
-                                    .mixWithOthers, .duckOthers])
+        try s.setCategory(.playAndRecord, mode: .voiceChat, options: sessionOptions())
         try s.setPreferredSampleRate(48000)
         try s.setPreferredIOBufferDuration(0.02)
     }
+
+    // MARK: output route (SPEAKER / EARPIECE button)
+
+    /// Speaker by default: the phone lies on the desk while he talks. Off
+    /// means the earpiece, with the proximity sensor darkening the screen
+    /// at the ear like the Phone app.
+    var speaker: Bool = UserDefaults.standard.object(forKey: "murray.speaker") as? Bool ?? true
+
+    private func sessionOptions() -> AVAudioSession.CategoryOptions {
+        var o: AVAudioSession.CategoryOptions = [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers, .duckOthers]
+        if speaker { o.insert(.defaultToSpeaker) }
+        return o
+    }
+
+    func setSpeaker(_ on: Bool) {
+        speaker = on
+        UserDefaults.standard.set(on, forKey: "murray.speaker")
+        let s = AVAudioSession.sharedInstance()
+        do {
+            try s.setCategory(.playAndRecord, mode: .voiceChat, options: sessionOptions())
+            try s.overrideOutputAudioPort(on ? .speaker : .none)
+        } catch {
+            lastError = "route: \(error.localizedDescription)"
+            emit("error", ["where": "route", "why": error.localizedDescription])
+        }
+        DispatchQueue.main.async { UIDevice.current.isProximityMonitoringEnabled = !on }
+        emitRoute()
+    }
+
+    /// What the phone is actually playing through, for the call screen.
+    func routeInfo() -> [String: Any] {
+        let outs = AVAudioSession.sharedInstance().currentRoute.outputs
+        let port = outs.first?.portType
+        let kind: String
+        switch port {
+        case .some(.builtInSpeaker): kind = "speaker"
+        case .some(.builtInReceiver): kind = "earpiece"
+        case .some(.headphones), .some(.headsetMic): kind = "headphones"
+        case .some(.bluetoothA2DP), .some(.bluetoothHFP), .some(.bluetoothLE): kind = "bluetooth"
+        case .some(.airPlay): kind = "airplay"
+        case .some(.carAudio): kind = "car"
+        default: kind = outs.first.map { $0.portType.rawValue } ?? "none"
+        }
+        return ["kind": kind, "name": outs.first?.portName ?? "", "speaker": speaker]
+    }
+    private func emitRoute() { emit("route", routeInfo()) }
 
     func start(callId: String) throws {
         self.callId = callId
@@ -82,6 +127,9 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         try startInput()
         running = true
         emit("state", ["state": "listening"])
+        if !speaker { try? AVAudioSession.sharedInstance().overrideOutputAudioPort(.none) }
+        DispatchQueue.main.async { UIDevice.current.isProximityMonitoringEnabled = !self.speaker }
+        emitRoute()
     }
 
     private func startInput() throws {
@@ -128,6 +176,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     func stop(reason: String) {
         guard running else { return }
         running = false
+        DispatchQueue.main.async { UIDevice.current.isProximityMonitoringEnabled = false }
         endpointer.end()
         turnTask?.cancel(); turnTask = nil
         stopPlayback()
@@ -163,6 +212,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             "running": running, "engineRunning": audio.isRunning,
             "tapBuffers": tapBuffers, "tapFormat": tapFormat, "levelTicks": levelTick,
             "convertErrors": convertErrors, "voiceProcessing": vpEnabled, "healed": healed,
+            "gateStart": endpointer.startLevel, "noiseFloor": endpointer.floor, "speaker": speaker,
             "inputFormat": "\(audio.inputNode.outputFormat(forBus: 0))",
             "inputVP": audio.inputNode.isVoiceProcessingEnabled,
             "category": s.category.rawValue, "mode": s.mode.rawValue,
@@ -225,7 +275,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         lock.unlock()
         apply(action)
         levelTick += 1
-        if levelTick % 4 == 0 { emit("level", ["rms": rms, "state": endpointer.state.rawValue, "capturing": capturing, "playing": queued > 0, "taps": levelTick]) }
+        if levelTick % 4 == 0 { emit("level", ["rms": rms, "start": endpointer.startLevel, "floor": endpointer.floor, "state": endpointer.state.rawValue, "capturing": capturing, "playing": queued > 0, "taps": levelTick]) }
     }
 
     private func apply(_ action: EndpointerAction) {
@@ -456,6 +506,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         DispatchQueue.main.async {
             self.stopInput()
             try? self.startInput()
+            self.emitRoute()
         }
     }
 

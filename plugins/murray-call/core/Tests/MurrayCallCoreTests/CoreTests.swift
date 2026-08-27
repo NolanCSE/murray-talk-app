@@ -75,6 +75,40 @@ final class EndpointerTests: XCTestCase {
     }
 }
 
+final class AdaptiveGateTests: XCTestCase {
+    func testQuietRoomLowersTheStartLevel() {
+        var e = Endpointer()
+        XCTAssertEqual(e.startLevel, 0.030, accuracy: 1e-6)        // begins where the fixed gate was
+        // a quiet phone at arm's length: RMS 0.002 for two seconds
+        for t in stride(from: 0.0, through: 2000, by: 20) { XCTAssertEqual(e.level(0.002, at: t), .none) }
+        XCTAssertLessThan(e.startLevel, 0.010)
+        // soft speech the old gate never opened for
+        XCTAssertEqual(e.level(0.015, at: 2020), .startTurn)
+        XCTAssertEqual(e.state, .user)
+    }
+    func testSpeechDoesNotLiftTheFloor() {
+        var e = Endpointer()
+        for t in stride(from: 0.0, through: 2000, by: 20) { _ = e.level(0.002, at: t) }
+        let before = e.floor
+        _ = e.level(0.05, at: 2020)                                  // turn opens; .user ignores tracking
+        for t in stride(from: 2040.0, through: 4000, by: 20) { _ = e.level(0.05, at: t) }
+        XCTAssertEqual(e.floor, before)
+    }
+    func testNoisyRoomRaisesItButNeverAboveTheOldGate() {
+        var e = Endpointer()
+        for t in stride(from: 0.0, through: 20000, by: 20) { _ = e.level(0.02, at: t) }
+        XCTAssertEqual(e.startLevel, 0.030, accuracy: 1e-6)
+        XCTAssertEqual(e.state, .listening)
+    }
+    func testFixedModeIsTheOldBehaviour() {
+        var c = EndpointerConfig(); c.adaptive = false
+        var e = Endpointer(config: c)
+        for t in stride(from: 0.0, through: 2000, by: 20) { _ = e.level(0.002, at: t) }
+        XCTAssertEqual(e.level(0.015, at: 2020), .none)
+        XCTAssertEqual(e.level(0.031, at: 2040), .startTurn)
+    }
+}
+
 final class SSEParserTests: XCTestCase {
     func testFramesSplitAcrossChunks() {
         var p = SSEParser()
