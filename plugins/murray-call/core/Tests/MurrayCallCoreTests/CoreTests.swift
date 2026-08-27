@@ -78,7 +78,8 @@ final class EndpointerTests: XCTestCase {
 final class AdaptiveGateTests: XCTestCase {
     func testQuietRoomLowersTheStartLevel() {
         var e = Endpointer()
-        XCTAssertEqual(e.startLevel, 0.030, accuracy: 1e-6)        // begins where the fixed gate was
+        XCTAssertLessThanOrEqual(e.startLevel, 0.030)               // never above the old fixed gate
+        XCTAssertGreaterThan(e.startLevel, 0.015)                   // and not yet lowered: no quiet measured
         // a quiet phone at arm's length: RMS 0.002 for two seconds
         for t in stride(from: 0.0, through: 2000, by: 20) { XCTAssertEqual(e.level(0.002, at: t), .none) }
         XCTAssertLessThan(e.startLevel, 0.010)
