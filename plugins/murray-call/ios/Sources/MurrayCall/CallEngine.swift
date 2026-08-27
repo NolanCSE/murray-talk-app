@@ -76,35 +76,34 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
 
     // MARK: output route (SPEAKER / EARPIECE button)
 
-    /// Speaker by default: the phone lies on the desk while he talks. Off
-    /// means the earpiece, with the proximity sensor darkening the screen
-    /// at the ear like the Phone app.
-    var speaker: Bool = UserDefaults.standard.object(forKey: "murray.speaker") as? Bool ?? true
+    /// The phone decides, like the Phone app: headphones or Bluetooth win
+    /// whenever they are connected; the route picker (the standard iOS
+    /// sheet) changes it. The one thing Murray does on his own is swap the
+    /// top receiver for the loudspeaker — a phone on the desk, not at the
+    /// ear — and only when nothing external is attached. Forcing .speaker
+    /// unconditionally broke headphones (2026-08-27).
+    var speaker: Bool { AVAudioSession.sharedInstance().currentRoute.outputs.first?.portType == .builtInSpeaker }
 
     private func sessionOptions() -> AVAudioSession.CategoryOptions {
-        var o: AVAudioSession.CategoryOptions = [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers, .duckOthers]
-        if speaker { o.insert(.defaultToSpeaker) }
-        return o
+        [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers, .duckOthers]
     }
 
+    /// Explicit choice from the page's fallback: speaker on/off. The picker
+    /// is the normal way; this stays for a page without it.
     func setSpeaker(_ on: Bool) {
-        speaker = on
-        UserDefaults.standard.set(on, forKey: "murray.speaker")
-        applyRoute()
+        let s = AVAudioSession.sharedInstance()
+        do { try s.overrideOutputAudioPort(on ? .speaker : .none) }
+        catch { emit("error", ["where": "route", "why": error.localizedDescription]) }
+        emitRoute()
     }
 
-    /// Under CallKit the category is CallKit's and .defaultToSpeaker is
-    /// ignored: his voice came out of the top receiver (2026-08-27). The
-    /// port override is the one call that moves it, and it only sticks once
-    /// the session is active — so it runs at start and on every toggle.
+    /// Receiver → loudspeaker, nothing else touched.
     private func applyRoute() {
         let s = AVAudioSession.sharedInstance()
-        do { try s.overrideOutputAudioPort(speaker ? .speaker : .none) }
-        catch {
-            lastError = "route: \(error.localizedDescription)"
-            emit("error", ["where": "route", "why": error.localizedDescription])
+        if s.currentRoute.outputs.first?.portType == .builtInReceiver {
+            try? s.overrideOutputAudioPort(.speaker)
         }
-        DispatchQueue.main.async { UIDevice.current.isProximityMonitoringEnabled = !self.speaker }
+        DispatchQueue.main.async { UIDevice.current.isProximityMonitoringEnabled = self.routeInfo()["kind"] as? String == "earpiece" }
         emitRoute()
     }
 
@@ -541,14 +540,19 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         DispatchQueue.main.async {
             self.stopInput()
             try? self.startInput()
-            // iOS (CallKit, a category change, the engine restarting) can
-            // put a phone call back on the top receiver; if SPEAKER is on
-            // and that happened, ask again — once per change, so an
-            // override that fails cannot loop.
-            let out = AVAudioSession.sharedInstance().currentRoute.outputs.first?.portType
-            if self.speaker && out == .builtInReceiver && reason != .override {
-                try? AVAudioSession.sharedInstance().overrideOutputAudioPort(.speaker)
+            let s = AVAudioSession.sharedInstance()
+            let out = s.currentRoute.outputs.first?.portType
+            switch reason {
+            case .newDeviceAvailable:
+                // Headphones or Bluetooth arrived: drop any override so they take over.
+                try? s.overrideOutputAudioPort(.none)
+            case .oldDeviceUnavailable, .categoryChange, .routeConfigurationChange:
+                // Back on the phone itself: receiver → loudspeaker, once per change.
+                if out == .builtInReceiver { try? s.overrideOutputAudioPort(.speaker) }
+            default: break                                   // .override is the user's choice: keep it
             }
+            let kind = self.routeInfo()["kind"] as? String
+            UIDevice.current.isProximityMonitoringEnabled = kind == "earpiece"
             self.emitRoute()
         }
     }

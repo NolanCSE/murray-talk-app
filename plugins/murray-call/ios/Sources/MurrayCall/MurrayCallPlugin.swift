@@ -1,6 +1,8 @@
 import Foundation
 import Capacitor
 import AVFoundation
+import AVKit
+import UIKit
 
 /// window.Capacitor.Plugins.MurrayCall — the page's handle on the native call.
 /// Methods: start({callkit?}), end, setMuted({on}), holdStart, holdEnd, sync,
@@ -24,6 +26,8 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "diag", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setRoute", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setSensitivity", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "pickRoute", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "route", returnType: CAPPluginReturnPromise),
     ]
 
     private var engine: CallEngine?
@@ -111,6 +115,21 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
         let on = call.getBool("speaker") ?? true
         if let e = engine { e.setSpeaker(on); call.resolve(e.routeInfo()) }
         else { UserDefaults.standard.set(on, forKey: "murray.speaker"); call.resolve(["kind": on ? "speaker" : "earpiece", "name": "", "speaker": on]) }
+    }
+    /// pickRoute() — the standard iOS audio-route sheet (iPhone / Speaker /
+    /// any Bluetooth device), the same one the Phone app shows.
+    private var picker: AVRoutePickerView?
+    @objc func pickRoute(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            guard let host = self.bridge?.viewController?.view else { call.reject("no view"); return }
+            let p = self.picker ?? AVRoutePickerView(frame: CGRect(x: -100, y: -100, width: 44, height: 44))
+            if self.picker == nil { p.alpha = 0.02; host.addSubview(p); self.picker = p }
+            if let b = p.subviews.compactMap({ $0 as? UIButton }).first { b.sendActions(for: .touchUpInside); call.resolve() }
+            else { call.reject("route picker has no button on this iOS") }
+        }
+    }
+    @objc func route(_ call: CAPPluginCall) {
+        call.resolve(engine?.routeInfo() ?? ["kind": "none", "name": "", "speaker": false])
     }
     /// setSensitivity({level: "low"|"normal"|"high"}) — how quietly he can
     /// be spoken to before a turn opens. Remembered; applied to a live call.

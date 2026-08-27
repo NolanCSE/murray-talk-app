@@ -47,6 +47,7 @@ jobs:
         run: |
           set -o pipefail
           swift test 2>&1 | tee test.log | tail -40
+          grep -E "error:|XCTAssert" test.log || true
           grep -q "Executed [1-9][0-9]* tests, with 0 failures" test.log
 
   simulator:
