@@ -1,0 +1,7 @@
+{
+  "name": "murray-call",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Native call engine for the Murray iPhone app: mic, endpointing, /turn upload, playback, CallKit",
+  "capacitor": { "ios": { "src": "ios" } }
+}

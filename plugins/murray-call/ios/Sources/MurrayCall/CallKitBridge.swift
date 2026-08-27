@@ -1,0 +1,72 @@
+import Foundation
+import CallKit
+import AVFoundation
+
+/// Makes the conversation a real iOS call: lock-screen UI, End from the
+/// lock screen, and a call-priority audio session that survives the app
+/// leaving the foreground. No VoIP push yet (phase 3): every call is
+/// outgoing, started by the page.
+final class CallKitBridge: NSObject, CXProviderDelegate {
+    private let provider: CXProvider
+    private let controller = CXCallController()
+    private var uuid: UUID?
+    var onActivate: (() -> Void)?
+    var onEnded: (() -> Void)?
+    var configureSession: (() throws -> Void)?
+
+    override init() {
+        let cfg = CXProviderConfiguration()
+        cfg.supportsVideo = false
+        cfg.maximumCallGroups = 1
+        cfg.maximumCallsPerCallGroup = 1
+        cfg.supportedHandleTypes = [.generic]
+        cfg.includesCallsInRecents = false
+        provider = CXProvider(configuration: cfg)
+        super.init()
+        provider.setDelegate(self, queue: nil)
+    }
+
+    func start(completion: @escaping (Error?) -> Void) {
+        let id = UUID(); uuid = id
+        let action = CXStartCallAction(call: id, handle: CXHandle(type: .generic, value: "Murray"))
+        action.isVideo = false
+        controller.request(CXTransaction(action: action)) { err in
+            if err == nil {
+                self.provider.reportOutgoingCall(with: id, startedConnectingAt: Date())
+                self.provider.reportOutgoingCall(with: id, connectedAt: Date())
+            }
+            completion(err)
+        }
+    }
+
+    func end() {
+        guard let id = uuid else { return }
+        controller.request(CXTransaction(action: CXEndCallAction(call: id))) { _ in }
+    }
+
+    // MARK: CXProviderDelegate
+
+    func providerDidReset(_ provider: CXProvider) {
+        uuid = nil
+        onEnded?()
+    }
+
+    func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+        do { try configureSession?() } catch { action.fail(); return }
+        action.fulfill()
+    }
+
+    func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+        onActivate?()
+    }
+
+    func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        uuid = nil
+        onEnded?()
+        action.fulfill()
+    }
+
+    func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+        action.fulfill()
+    }
+}

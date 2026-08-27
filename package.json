@@ -12,7 +12,8 @@
     "@capacitor/core": "^8",
     "@capacitor/ios": "^8",
     "@capacitor/splash-screen": "^8",
-    "@capacitor/status-bar": "^8"
+    "@capacitor/status-bar": "^8",
+    "murray-call": "file:plugins/murray-call"
   },
   "devDependencies": {
     "@capacitor/cli": "^8",

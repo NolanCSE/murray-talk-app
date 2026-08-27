@@ -32,6 +32,20 @@ jobs:
         run: |
           if [ -n "$HAVE_KEY" ] && [ -n "$HAVE_URL" ]; then echo "signed=true"; else echo "signed=false"; fi >> "$GITHUB_OUTPUT"
 
+  core-tests:
+    # The plugin's pure-Swift core (endpointer, SSE parser, WAV) under
+    # `swift test` — the cheap job; iterate here before the simulator.
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pick newest Xcode
+        run: |
+          x=$(ls -d /Applications/Xcode*.app | sort -V | tail -1); sudo xcode-select -s "$x"; swift --version
+      - name: swift test (MurrayCallCore)
+        working-directory: plugins/murray-call
+        run: swift test --filter MurrayCallCoreTests 2>&1 | tail -40
+
   simulator:
     runs-on: macos-15
     timeout-minutes: 40
