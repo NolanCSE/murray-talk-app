@@ -77,7 +77,7 @@ final class EndpointerTests: XCTestCase {
 
 final class EchoGuardTests: XCTestCase {
     func testStreamEndingDoesNotOpenTheGateWhileAudioPlays() {
-        var e = Endpointer()
+        var e = Endpointer(); e.setLevelBargeIn(false)       // no echo cancellation, as on the phone
         _ = e.holdStart(at: 0); _ = e.holdEnd(at: 1000)      // a turn was sent
         e.playbackStarted(at: 1500)                           // first clip sounds
         e.replyDone()                                         // the SSE stream is over, audio still queued
@@ -92,6 +92,13 @@ final class EchoGuardTests: XCTestCase {
         e.playbackStopped(at: 2000)
         XCTAssertEqual(e.level(0.5, at: 2300), .none)        // inside the tail
         XCTAssertEqual(e.level(0.5, at: 2800), .startTurn)   // you, after it
+    }
+    func testNoBargeInWithoutEchoCancellationKeepsSpeaking() {
+        var e = Endpointer(); e.setLevelBargeIn(false)
+        e.playbackStarted(at: 0)
+        XCTAssertEqual(e.level(0.9, at: 2000), .none)
+        XCTAssertEqual(e.state, .speaking)                     // never .user from his own voice
+        XCTAssertEqual(e.holdStart(at: 2100), .bargeIn)        // the bar still interrupts him
     }
     func testTextOnlyReplyStillReturnsToListening() {
         var e = Endpointer()

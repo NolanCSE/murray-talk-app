@@ -22,6 +22,11 @@ public struct EndpointerConfig: Equatable {
     public var startRatio: Float = 2.5
     public var stopRatio: Float = 0.6       // stop = start * stopRatio
     public var tailMs: Double = 700          // after his audio stops, ignore the room's reverb this long
+    /// Level barge-in needs echo cancellation; without it "speech" over his
+    /// playback is his own speaker. The engine turns this off when voice
+    /// processing is off. (Before 2026-08-27 the state still flipped to
+    /// .user here even though the engine then ignored the action.)
+    public var levelBargeIn: Bool = true
     public init() {}
 }
 
@@ -81,6 +86,8 @@ public struct Endpointer {
     /// The sensitivity setting: how far above the quiet floor speech must
     /// rise. "high" opens for a murmur across the desk; "low" wants a clear
     /// voice. Levels are post pre-gain (the engine boosts the raw mic).
+    public mutating func setLevelBargeIn(_ on: Bool) { config.levelBargeIn = on }
+
     public mutating func tune(sensitivity: String) {
         switch sensitivity {
         case "high": config.minStart = 0.002; config.startRatio = 1.8
@@ -142,7 +149,7 @@ public struct Endpointer {
             if rms > startLevel { state = .user; turnBeganAt = t; quietSince = t; return .startTurn }
             return .none
         case .speaking:
-            if hold { return .none }
+            if hold || !config.levelBargeIn { return .none }
             // Barge-in: his voice over Murray's, but not the echo of Murray's
             // own opening, which arrives inside the grace window.
             if rms > startLevel && t - playbackBeganAt > config.bargeGraceMs {

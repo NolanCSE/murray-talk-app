@@ -144,6 +144,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         self.callId = callId
         endpointer = Endpointer()
         endpointer.tune(sensitivity: sensitivity)
+        endpointer.setLevelBargeIn(vpEnabled)
         turns = []
         try startInput()
         running = true
@@ -180,6 +181,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             guard let self = self, self.running, self.tapBuffers == mark, !self.healed else { return }
             self.healed = true
             self.vpEnabled = !self.vpEnabled
+            self.lock.lock(); self.endpointer.setLevelBargeIn(self.vpEnabled); self.lock.unlock()
             self.lastError = "no mic buffers in 2s (voice processing \(self.vpEnabled ? "off" : "on")); restarted with it \(self.vpEnabled ? "on" : "off")"
             self.emit("error", ["where": "microphone", "why": self.lastError])
             self.stopInput()
@@ -307,12 +309,8 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         switch action {
         case .none: return
         case .bargeIn:
-            if !vpEnabled && !endpointer.hold {
-                // No echo cancellation: that "speech" is probably his own
-                // speaker. Ignore level barge-in; hold-to-talk still works.
-                lock.lock(); endpointer.playbackStarted(at: CallEngine.now()); lock.unlock()
-                return
-            }
+            // Level barge-in only arrives with echo cancellation on (the
+            // endpointer is told); hold-to-talk barge-in arrives regardless.
             stopPlayback()
             beginCapture()
         case .startTurn:
