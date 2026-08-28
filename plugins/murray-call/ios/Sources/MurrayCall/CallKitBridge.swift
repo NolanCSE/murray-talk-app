@@ -43,6 +43,8 @@ final class CallKitBridge: NSObject, CXProviderDelegate {
         }
     }
 
+    var hasCall: Bool { uuid != nil }
+
     func end() {
         guard let id = uuid else { return }
         controller.request(CXTransaction(action: CXEndCallAction(call: id))) { _ in }

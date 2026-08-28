@@ -101,8 +101,12 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func end(_ call: CAPPluginCall) {
-        if let ck = callkit { ck.end() }            // → onEnded → engine.stop
+        // ALWAYS through the shared provider when a CallKit call exists —
+        // a RUNG call was never the plugin's `callkit`, so END stopped the
+        // audio but left the system call running (2026-08-28).
+        if CallKitBridge.shared.hasCall { CallKitBridge.shared.end() }   // → onEnded → engine.stop
         else { engine?.stop(reason: "ended from the page"); engine = nil }
+        callkit = nil
         call.resolve()
     }
 
