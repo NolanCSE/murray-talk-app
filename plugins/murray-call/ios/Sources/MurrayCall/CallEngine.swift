@@ -582,8 +582,12 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     /// rules apply — no second stream to collide with his first words
     /// (2026-08-28: answered fast, spoke, and the two turns fought).
     private(set) var preheating = false
-    func preheatTurn(_ text: String) {
+    func preheatTurn(_ text: String, callId: String) {
         guard !running, turnTask == nil else { return }
+        // The turn needs the call id NOW — the engine normally gets it at
+        // start(), which is still a ring away. Sent empty, the server said
+        // 400 "no call id" and he answered into silence (2026-08-28).
+        self.callId = callId
         preheating = true
         lock.lock(); endpointer.turnSent(); lock.unlock()
         upload(Data(text.utf8), mime: "text/plain")
