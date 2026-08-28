@@ -4,7 +4,7 @@ import XCTest
 final class EndpointerTests: XCTestCase {
     func testSpeechThenQuietMakesATurn() {
         var e = Endpointer()
-        XCTAssertEqual(e.level(0.05, at: 0), .startTurn)
+        XCTAssertEqual(speak(&e, 0.05, from: 0, ms: 140), .startTurn)   // onset hold satisfied
         XCTAssertEqual(e.state, .user)
         for t in stride(from: 20.0, through: 1000, by: 20) { XCTAssertEqual(e.level(0.05, at: t), .none) }
         // quiet for 900ms
@@ -26,9 +26,12 @@ final class EndpointerTests: XCTestCase {
 
     func testMaxLengthCuts() {
         var e = Endpointer()
-        _ = e.level(0.05, at: 0)
+        _ = speak(&e, 0.05, from: 0, ms: 140)
         var a: EndpointerAction = .none
-        for t in stride(from: 20.0, through: 25000, by: 20) { a = e.level(0.05, at: t); if a != .none { break } }
+        var t = 160.0
+        while t <= 25000 {                                    // modulated, so it is speech, until maxMs cuts it
+            a = e.level(Int(t / 200) % 2 == 0 ? 0.05 : 0.0, at: t); if a != .none { break }; t += 20
+        }
         XCTAssertEqual(a, .endTurn)
     }
 
@@ -37,7 +40,7 @@ final class EndpointerTests: XCTestCase {
         e.playbackStarted(at: 0)
         XCTAssertEqual(e.state, .speaking)
         XCTAssertEqual(e.level(0.08, at: 300), .none)      // echo window
-        XCTAssertEqual(e.level(0.08, at: 700), .bargeIn)
+        XCTAssertEqual(e.level(0.08, at: 700), .bargeIn)   // barge-in has no onset hold: the bar-less interrupt
         XCTAssertEqual(e.state, .user)
     }
 
@@ -75,6 +78,66 @@ final class EndpointerTests: XCTestCase {
     }
 }
 
+/// Feed a constant level every 20 ms for `ms`; returns the first non-.none action.
+func speak(_ e: inout Endpointer, _ rms: Float, from t0: Double, ms: Double) -> EndpointerAction {
+    var t = t0
+    while t <= t0 + ms { let a = e.level(rms, at: t); if a != .none { return a }; t += 20 }
+    return .none
+}
+
+final class NoiseShapeTests: XCTestCase {
+    func testAClickDoesNotOpenATurn() {
+        var e = Endpointer()
+        XCTAssertEqual(speak(&e, 0.5, from: 0, ms: 80), .none)      // 80 ms spike
+        XCTAssertEqual(e.level(0.0, at: 100), .none)
+        XCTAssertEqual(e.state, .listening)
+        XCTAssertEqual(speak(&e, 0.5, from: 200, ms: 140), .startTurn)
+    }
+    func testSteadyNoiseIsDroppedAndLiftsTheFloor() {
+        var e = Endpointer()
+        for t in stride(from: 0.0, through: 1000, by: 20) { _ = e.level(0.002, at: t) }
+        let floorBefore = e.floor
+        XCTAssertEqual(speak(&e, 0.04, from: 1100, ms: 140), .startTurn)        // a car arrives
+        var a: EndpointerAction = .none
+        for t in stride(from: 1260.0, through: 5000, by: 20) { a = e.level(0.04, at: t); if a != .none { break } }
+        XCTAssertEqual(a, .none)                                               // still "talking" at 5 s: no quiet yet
+        for t in stride(from: 5020.0, through: 6500, by: 20) { a = e.level(0.0, at: t); if a != .none { break } }
+        XCTAssertEqual(a, .discardTurn)                                        // 4 s with no dips: not speech
+        XCTAssertGreaterThan(e.floor, floorBefore * 5)
+        XCTAssertEqual(e.state, .listening)
+    }
+    func testSpeechHasDipsAndIsSent() {
+        var e = Endpointer()
+        XCTAssertEqual(speak(&e, 0.05, from: 0, ms: 140), .startTurn)
+        var a: EndpointerAction = .none
+        var t = 160.0
+        while t <= 3000 { a = e.level(Int(t / 300) % 2 == 0 ? 0.05 : 0.0, at: t); if a != .none { break }; t += 20 }
+        XCTAssertEqual(a, .none)
+        XCTAssertGreaterThan(e.dipsInTurn, 2)
+        while t <= 5000 { a = e.level(0.0, at: t); if a != .none { break }; t += 20 }
+        XCTAssertEqual(a, .endTurn)
+    }
+    func testHoldToTalkIsNeverDroppedAsNoise() {
+        var e = Endpointer()
+        _ = e.holdStart(at: 0)
+        for t in stride(from: 20.0, through: 4000, by: 20) { _ = e.level(0.04, at: t) }
+        XCTAssertEqual(e.holdEnd(at: 4000), .endTurn)
+    }
+}
+
+final class HighPassTests: XCTestCase {
+    private func gain(_ hz: Float) -> Float {
+        var f = HighPass(cutoffHz: 250, sampleRate: 16000)
+        let n = 16000
+        let x = (0..<n).map { sin(2 * Float.pi * hz * Float($0) / 16000) }
+        let y = f.process(x)
+        let tail = Array(y[n/2...])
+        return tail.withUnsafeBufferPointer { WAV.rms($0) } / Float(0.70710678)
+    }
+    func testRumbleIsCut() { XCTAssertLessThan(20 * log10(gain(100)), -12) }
+    func testVoiceBandPasses() { XCTAssertGreaterThan(20 * log10(gain(1000)), -1) }
+}
+
 final class EchoGuardTests: XCTestCase {
     func testStreamEndingDoesNotOpenTheGateWhileAudioPlays() {
         var e = Endpointer(); e.setLevelBargeIn(false)       // no echo cancellation, as on the phone
@@ -91,7 +154,7 @@ final class EchoGuardTests: XCTestCase {
         e.playbackStarted(at: 0)
         e.playbackStopped(at: 2000)
         XCTAssertEqual(e.level(0.5, at: 2300), .none)        // inside the tail
-        XCTAssertEqual(e.level(0.5, at: 2800), .startTurn)   // you, after it
+        XCTAssertEqual(speak(&e, 0.5, from: 2800, ms: 140), .startTurn)   // you, after it
     }
     func testNoBargeInWithoutEchoCancellationKeepsSpeaking() {
         var e = Endpointer(); e.setLevelBargeIn(false)
@@ -116,7 +179,7 @@ final class AdaptiveGateTests: XCTestCase {
         for t in stride(from: 0.0, through: 2000, by: 20) { XCTAssertEqual(e.level(0.002, at: t), .none) }
         XCTAssertLessThan(e.startLevel, 0.010)
         // soft speech the old gate never opened for
-        XCTAssertEqual(e.level(0.015, at: 2020), .startTurn)
+        XCTAssertEqual(speak(&e, 0.015, from: 2020, ms: 140), .startTurn)
         XCTAssertEqual(e.state, .user)
     }
     func testSensitivityMovesTheGate() {
@@ -124,15 +187,15 @@ final class AdaptiveGateTests: XCTestCase {
         hi.tune(sensitivity: "high"); lo.tune(sensitivity: "low")
         for t in stride(from: 0.0, through: 2000, by: 20) { _ = hi.level(0.002, at: t); _ = lo.level(0.002, at: t) }
         XCTAssertLessThan(hi.startLevel, lo.startLevel)
-        XCTAssertEqual(hi.level(0.005, at: 2020), .startTurn)      // a murmur opens HIGH
-        XCTAssertEqual(lo.level(0.005, at: 2020), .none)           // but not LOW
+        XCTAssertEqual(speak(&hi, 0.005, from: 2020, ms: 140), .startTurn)   // a murmur opens HIGH
+        XCTAssertEqual(speak(&lo, 0.005, from: 2020, ms: 140), .none)        // but not LOW
     }
     func testSpeechDoesNotLiftTheFloor() {
         var e = Endpointer()
         for t in stride(from: 0.0, through: 2000, by: 20) { _ = e.level(0.002, at: t) }
         let before = e.floor
-        _ = e.level(0.05, at: 2020)                                  // turn opens; .user ignores tracking
-        for t in stride(from: 2040.0, through: 4000, by: 20) { _ = e.level(0.05, at: t) }
+        _ = speak(&e, 0.05, from: 2020, ms: 140)                     // turn opens; .user ignores tracking
+        for t in stride(from: 2180.0, through: 3000, by: 20) { _ = e.level(0.05, at: t) }
         XCTAssertEqual(e.floor, before)
     }
     func testNoisyRoomRaisesItButNeverAboveTheOldGate() {
@@ -145,8 +208,8 @@ final class AdaptiveGateTests: XCTestCase {
         var c = EndpointerConfig(); c.adaptive = false
         var e = Endpointer(config: c)
         for t in stride(from: 0.0, through: 2000, by: 20) { _ = e.level(0.002, at: t) }
-        XCTAssertEqual(e.level(0.015, at: 2020), .none)
-        XCTAssertEqual(e.level(0.031, at: 2040), .startTurn)
+        XCTAssertEqual(speak(&e, 0.015, from: 2020, ms: 140), .none)
+        XCTAssertEqual(speak(&e, 0.031, from: 2200, ms: 140), .startTurn)
     }
 }
 

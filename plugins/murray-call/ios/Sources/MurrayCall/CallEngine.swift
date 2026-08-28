@@ -35,7 +35,13 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     // is markedly quieter than media playback — "he gets too quiet,
     // especially with music on" (2026-08-27).
     private let player = AVAudioPlayerNode()
+    private let fxPlayer = AVAudioPlayerNode()      // cue tones, through the same gain stage
     private let eq = AVAudioUnitEQ(numberOfBands: 1)
+    private var fxFormat: AVAudioFormat?
+    private var detect = HighPass()                 // the gate listens above ~250 Hz
+    /// Faint tick every 6 s while he is still thinking — a Settings toggle.
+    var thinkTick: Bool = UserDefaults.standard.bool(forKey: "murray.thinkTick")
+    private var tickTimer: Timer?
     private var playbackWired = false
     private var queued = 0                          // clips scheduled and not yet finished
     private var clipFiles: [URL] = []
@@ -164,10 +170,12 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             self?.consume(buf)
         }
         if !playbackWired {
-            audio.attach(player); audio.attach(eq)
+            audio.attach(player); audio.attach(fxPlayer); audio.attach(eq)
             eq.globalGain = gainDb
             let fmt = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)
+            fxFormat = fmt
             audio.connect(player, to: eq, format: fmt)
+            audio.connect(fxPlayer, to: eq, format: fmt)
             audio.connect(eq, to: audio.mainMixerNode, format: fmt)
             playbackWired = true
         }
@@ -196,6 +204,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     func stop(reason: String) {
         guard running else { return }
         running = false
+        stopTicks()
         DispatchQueue.main.async { UIDevice.current.isProximityMonitoringEnabled = false }
         endpointer.end()
         turnTask?.cancel(); turnTask = nil
@@ -220,8 +229,24 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     // call); OFF it works at once. Without echo cancellation Murray's own
     // voice would read as barge-in, so level barge-in is disabled in this
     // mode — hold-to-talk still interrupts him.
-    private var vpEnabled = false
+    private var vpEnabled = UserDefaults.standard.bool(forKey: "murray.vp")
     private var healed = false
+
+    /// Settings › Echo cancellation: Apple's voice processing (echo cancel
+    /// + noise suppression). Off by default — on 2026-08-27 it delivered no
+    /// mic buffers on his phone; that may have been the converter bug since
+    /// fixed, so it is a live toggle with Diagnostics to judge it by.
+    func setVoiceProcessing(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: "murray.vp")
+        vpEnabled = on
+        healed = false
+        lock.lock(); endpointer.setLevelBargeIn(on); lock.unlock()
+        guard running else { return }
+        DispatchQueue.main.async {
+            self.stopInput()
+            do { try self.startInput() } catch { self.emit("error", ["where": "microphone", "why": "restart failed: \(error.localizedDescription)"]) }
+        }
+    }
     private var lastError = ""
 
     /// Everything the phone knows about its own microphone, for the page's
@@ -236,6 +261,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             "gateStart": endpointer.startLevel, "noiseFloor": endpointer.floor, "peakRms": peakRms,
             "micGain": micGain, "sensitivity": sensitivity, "speaker": speaker,
             "routeReason": lastRouteReason, "playing": endpointer.playing,
+            "thinkTick": thinkTick, "dips": endpointer.dipsInTurn,
             "inputFormat": "\(audio.inputNode.outputFormat(forBus: 0))",
             "inputVP": audio.inputNode.isVoiceProcessingEnabled,
             "category": s.category.rawValue, "mode": s.mode.rawValue,
@@ -285,7 +311,10 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         let raw = UnsafeBufferPointer(start: ch, count: Int(out.frameLength))
         var boosted = [Float](repeating: 0, count: raw.count)
         for i in 0..<raw.count { boosted[i] = max(-1, min(1, raw[i] * micGain)) }
-        let rms = boosted.withUnsafeBufferPointer { WAV.rms($0) }
+        // The gate hears through a high-pass: road and wind noise sit under
+        // 250 Hz, a voice does not. Scribe gets the whole band.
+        let shaped = detect.process(boosted)
+        let rms = shaped.withUnsafeBufferPointer { WAV.rms($0) }
         peakRms = max(peakRms, rms)
         var ints = [Int16](repeating: 0, count: boosted.count)
         for i in 0..<boosted.count { ints[i] = Int16(boosted[i] * 32767) }
@@ -341,12 +370,14 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             if samples.count < 2400 {
                 emit("error", ["where": "capturing",
                                "why": "no audio captured (%d ms) — the microphone is not delivering; try End and start again".replacingOccurrences(of: "%d", with: String(samples.count / 16))])
+                cue(.notHeard)
                 lock.lock(); endpointer.replyDone(); let st = endpointer.state; lock.unlock()
                 emit("state", ["state": st.rawValue])
                 return
             }
             emit("state", ["state": "thinking"])
             emit("doing", ["label": "sending \(samples.count / 16) ms"])
+            cue(.sent)
             upload(WAV.encode(pcm16: samples, sampleRate: 16000))
         } else {
             emit("state", ["state": endpointer.state.rawValue])
@@ -388,6 +419,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         req.httpBody = body
         sse = SSEParser(); replyLine = ""
+        startTicks()
         turnTask?.cancel()
         let task = session.dataTask(with: req)
         turnTask = task
@@ -402,6 +434,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard task == turnTask else { return }
         turnTask = nil
+        stopTicks()
         if let e = error as NSError?, e.code != NSURLErrorCancelled {
             emit("error", ["where": "turn", "why": e.localizedDescription])
         }
@@ -422,7 +455,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         guard let obj = try? JSONSerialization.jsonObject(with: Data(f.data.utf8)) as? [String: Any] else { return }
         switch f.event {
         case "heard":
-            if obj["empty"] as? Bool == true { emit("heard", ["text": "", "empty": true]); return }
+            if obj["empty"] as? Bool == true { emit("heard", ["text": "", "empty": true]); cue(.notHeard); stopTicks(); return }
             let text = obj["text"] as? String ?? ""
             turns.append(Turn(who: "you", text: text))
             emit("heard", ["text": text])
@@ -431,6 +464,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             replyLine += (replyLine.isEmpty ? "" : " ") + text
             emit("say", ["text": text, "why": obj["why"] as? String ?? ""])
             if let b64 = obj["audio"] as? String, !b64.isEmpty, let mp3 = Data(base64Encoded: b64) {
+                stopTicks()
                 enqueue(mp3)
             }
         case "control":
@@ -556,6 +590,60 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             self.emitRoute()
         }
     }
+
+    // MARK: cues — "I heard you", "I didn't", "still thinking"
+    // Synthesised on the engine so they sound with the screen locked.
+
+    enum Cue { case sent, notHeard, tick }
+
+    private func tone(_ steps: [(hz: Float, ms: Int)], db: Float) -> AVAudioPCMBuffer? {
+        guard let fmt = fxFormat else { return nil }
+        let sr = Float(fmt.sampleRate)
+        let total = steps.reduce(0) { $0 + Int(sr * Float($1.ms) / 1000) }
+        guard let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(total)) else { return nil }
+        buf.frameLength = AVAudioFrameCount(total)
+        let amp = powf(10, db / 20)
+        var i = 0
+        for s in steps {
+            let n = Int(sr * Float(s.ms) / 1000)
+            let ramp = max(1, Int(sr * 0.005))
+            for k in 0..<n {
+                let env = min(1, Float(min(k, n - 1 - k)) / Float(ramp))
+                let v = s.hz > 0 ? sinf(2 * .pi * s.hz * Float(k) / sr) * amp * env : 0
+                for ch in 0..<Int(fmt.channelCount) { buf.floatChannelData?[ch][i] = v }
+                i += 1
+            }
+        }
+        return buf
+    }
+
+    func cue(_ c: Cue) {
+        let buf: AVAudioPCMBuffer?
+        switch c {
+        case .sent:     buf = tone([(880, 60), (1320, 60)], db: -16)
+        case .notHeard: buf = tone([(330, 80), (0, 60), (330, 80)], db: -14)
+        case .tick:     buf = tone([(660, 30)], db: -24)
+        }
+        guard let b = buf else { return }
+        DispatchQueue.main.async {
+            guard self.running else { return }
+            if !self.audio.isRunning { try? self.audio.start() }
+            self.fxPlayer.scheduleBuffer(b, completionHandler: nil)
+            if !self.fxPlayer.isPlaying { self.fxPlayer.play() }
+        }
+    }
+
+    private func startTicks() {
+        stopTicks()
+        guard thinkTick else { return }
+        DispatchQueue.main.async {
+            self.tickTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: true) { [weak self] _ in
+                guard let self = self, self.running, self.turnTask != nil, self.queued == 0 else { return }
+                self.cue(.tick)
+            }
+        }
+    }
+    private func stopTicks() { DispatchQueue.main.async { self.tickTimer?.invalidate(); self.tickTimer = nil } }
 
     // MARK: events
 

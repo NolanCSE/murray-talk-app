@@ -27,6 +27,13 @@ public struct EndpointerConfig: Equatable {
     /// processing is off. (Before 2026-08-27 the state still flipped to
     /// .user here even though the engine then ignored the action.)
     public var levelBargeIn: Bool = true
+    // Speech has a shape; a passing car does not (2026-08-27, AirPods on
+    // the pavement). A turn opens only after `onsetMs` continuously above
+    // the gate, and a turn that ran `steadyMs` or longer without a single
+    // dip below the stop level is steady noise: dropped, and the floor is
+    // lifted to it so the source raises the gate instead of re-triggering.
+    public var onsetMs: Double = 120
+    public var steadyMs: Double = 2500
     public init() {}
 }
 
@@ -50,6 +57,10 @@ public struct Endpointer {
     private var turnBeganAt: Double = 0
     private var quietSince: Double = 0
     private var playbackBeganAt: Double = 0
+    private var aboveSince: Double? = nil        // onset hold
+    private var dips = 0                         // times the level fell below stop then rose again, this turn
+    private var below = false
+    private var turnSum: Float = 0, turnN: Int = 0
     /// True while his audio is coming out of the speaker. Without echo
     /// cancellation the gate must stay shut for as long as that is true —
     /// the reply stream ending is NOT the audio ending (2026-08-27: he
@@ -74,7 +85,7 @@ public struct Endpointer {
     /// Follow the floor: quickly down, slowly up, so speech does not lift it.
     private mutating func track(_ rms: Float) {
         guard config.adaptive else { return }
-        let k: Float = rms < floor ? 0.2 : 0.01
+        let k: Float = rms < floor ? 0.2 : 0.03
         floor += (rms - floor) * k
         floor = max(floor, 0.0005)
     }
@@ -125,7 +136,7 @@ public struct Endpointer {
         guard state != .ended, !hold else { return .none }
         hold = true
         let barge = state == .speaking
-        state = .user; turnBeganAt = t; quietSince = t
+        _ = openTurn(at: t)
         return barge ? .bargeIn : .startTurn
     }
     public mutating func holdEnd(at t: Double) -> EndpointerAction {
@@ -145,30 +156,49 @@ public struct Endpointer {
         case .listening:
             if hold { return .none }
             if t < quietUntil { return .none }           // his reverb tail, not you
-            if rms <= startLevel { track(rms) }
-            if rms > startLevel { state = .user; turnBeganAt = t; quietSince = t; return .startTurn }
-            return .none
+            if rms <= startLevel { track(rms); aboveSince = nil; return .none }
+            if aboveSince == nil { aboveSince = t }
+            if t - aboveSince! < config.onsetMs { return .none }   // a click, a door: not yet a voice
+            aboveSince = nil
+            return openTurn(at: t)
         case .speaking:
             if hold || !config.levelBargeIn { return .none }
             // Barge-in: his voice over Murray's, but not the echo of Murray's
             // own opening, which arrives inside the grace window.
             if rms > startLevel && t - playbackBeganAt > config.bargeGraceMs {
-                state = .user; turnBeganAt = t; quietSince = t
+                _ = openTurn(at: t)
                 return .bargeIn
             }
             return .none
         case .user:
             if hold { return .none }
-            if rms > stopLevel { quietSince = t }
+            turnSum += rms; turnN += 1
+            if rms > stopLevel { quietSince = t; if below { dips += 1; below = false } }
+            else { below = true }
             if t - turnBeganAt >= config.maxMs { return endTurnNow(at: t) }
             if t - quietSince >= config.quietMs { return endTurnNow(at: t) }
             return .none
         }
     }
 
+    private mutating func openTurn(at t: Double) -> EndpointerAction {
+        state = .user; turnBeganAt = t; quietSince = t
+        dips = 0; below = false; turnSum = 0; turnN = 0
+        return .startTurn
+    }
+
+    /// Number of syllable/word gaps seen in the current or last turn.
+    public var dipsInTurn: Int { dips }
+
     private mutating func endTurnNow(at t: Double) -> EndpointerAction {
         let length = t - turnBeganAt
         if length < config.minMs {
+            state = muted ? .muted : .listening
+            return .discardTurn
+        }
+        if !hold && length >= config.steadyMs && dips == 0 && turnN > 0 {
+            // No shape at all: a car, a fan, the wind. Not a turn.
+            floor = max(floor, (turnSum / Float(turnN)) * 0.8)
             state = muted ? .muted : .listening
             return .discardTurn
         }

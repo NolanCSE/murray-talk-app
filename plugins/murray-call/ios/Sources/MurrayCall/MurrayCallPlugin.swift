@@ -27,6 +27,8 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setRoute", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setSensitivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "pickRoute", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setVoiceProcessing", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setCues", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "route", returnType: CAPPluginReturnPromise),
     ]
 
@@ -130,6 +132,20 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
     }
     @objc func route(_ call: CAPPluginCall) {
         call.resolve(engine?.routeInfo() ?? ["kind": "none", "name": "", "speaker": false])
+    }
+    /// setVoiceProcessing({on}) — Apple's echo cancellation + noise
+    /// suppression on the microphone. Remembered; restarts a live mic.
+    @objc func setVoiceProcessing(_ call: CAPPluginCall) {
+        let on = call.getBool("on") ?? false
+        if let e = engine { e.setVoiceProcessing(on) } else { UserDefaults.standard.set(on, forKey: "murray.vp") }
+        call.resolve(["on": on])
+    }
+    /// setCues({thinkTick}) — the faint tick every 6 s while he thinks.
+    @objc func setCues(_ call: CAPPluginCall) {
+        let tick = call.getBool("thinkTick") ?? false
+        UserDefaults.standard.set(tick, forKey: "murray.thinkTick")
+        engine?.thinkTick = tick
+        call.resolve(["thinkTick": tick])
     }
     /// setSensitivity({level: "low"|"normal"|"high"}) — how quietly he can
     /// be spoken to before a turn opens. Remembered; applied to a live call.
