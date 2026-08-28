@@ -183,7 +183,9 @@ public struct Endpointer {
             return .none
         case .user:
             if hold { return .none }
-            turnSum += rms; turnSq += rms * rms; turnN += 1
+            // Shape is judged over the voiced part only: the quiet that ends
+            // every turn would make a passing car look bursty.
+            if rms > stopLevel { turnSum += rms; turnSq += rms * rms; turnN += 1 }
             if rms > stopLevel { quietSince = t; if below { dips += 1; below = false } }
             else { below = true }
             if t - turnBeganAt >= config.maxMs { return endTurnNow(at: t) }
