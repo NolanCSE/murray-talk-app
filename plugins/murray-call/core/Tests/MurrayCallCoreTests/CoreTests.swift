@@ -174,7 +174,7 @@ final class EchoGuardTests: XCTestCase {
 final class AdaptiveGateTests: XCTestCase {
     func testQuietRoomLowersTheStartLevel() {
         var e = Endpointer()
-        XCTAssertLessThanOrEqual(e.startLevel, 0.030)               // never above the old fixed gate
+        XCTAssertLessThanOrEqual(e.startLevel, 0.030)               // starts where the fixed gate was
         XCTAssertGreaterThan(e.startLevel, 0.015)                   // and not yet lowered: no quiet measured
         // a quiet phone at arm's length: RMS 0.002 for two seconds
         for t in stride(from: 0.0, through: 2000, by: 20) { XCTAssertEqual(e.level(0.002, at: t), .none) }
@@ -199,11 +199,21 @@ final class AdaptiveGateTests: XCTestCase {
         for t in stride(from: 2180.0, through: 3000, by: 20) { _ = e.level(0.05, at: t) }
         XCTAssertEqual(e.floor, before)
     }
-    func testNoisyRoomRaisesItButNeverAboveTheOldGate() {
+    func testNoisyRoomRaisesTheGateAboveTheNoise() {
         var e = Endpointer()
-        for t in stride(from: 0.0, through: 20000, by: 20) { _ = e.level(0.02, at: t) }
-        XCTAssertEqual(e.startLevel, 0.030, accuracy: 1e-6)
-        XCTAssertEqual(e.state, .listening)
+        for t in stride(from: 0.0, through: 20000, by: 20) { _ = e.level(0.06, at: t) }   // louder than the old 0.030 cap
+        XCTAssertGreaterThan(e.startLevel, 0.06)
+        XCTAssertEqual(e.state, .listening)                              // never opened, never stuck
+    }
+    func testLoudSteadyRoomDoesNotStickInUser() {
+        var e = Endpointer()
+        XCTAssertEqual(speak(&e, 0.08, from: 0, ms: 140), .startTurn)    // a fan starts before any floor is known
+        var a: EndpointerAction = .none
+        var t = 160.0
+        while t <= 30000 { a = e.level(0.08, at: t); if a != .none { break }; t += 20 }
+        XCTAssertEqual(a, .discardTurn)                                  // maxMs, then no dips: noise
+        XCTAssertGreaterThan(e.startLevel, 0.08)                         // and the gate now sits above it
+        XCTAssertEqual(speak(&e, 0.08, from: t + 20, ms: 500), .none)    // so it does not reopen
     }
     func testFixedModeIsTheOldBehaviour() {
         var c = EndpointerConfig(); c.adaptive = false

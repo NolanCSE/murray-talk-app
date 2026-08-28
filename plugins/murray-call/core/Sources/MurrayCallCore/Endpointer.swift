@@ -18,6 +18,10 @@ public struct EndpointerConfig: Equatable {
     // level follows the measured quiet floor instead: floor * startRatio,
     // never below minStart, never above `start`.
     public var adaptive: Bool = true
+    /// Ceiling for the adaptive gate. Was `start` (0.030): with the x4
+    /// pre-gain a noisy room sat above it, the turn never ended and GO AHEAD
+    /// stuck (2026-08-28). Levels are post-gain, so this is generous.
+    public var maxStart: Float = 0.25
     public var minStart: Float = 0.003
     public var startRatio: Float = 2.5
     public var stopRatio: Float = 0.5       // stop = start * stopRatio
@@ -75,7 +79,7 @@ public struct Endpointer {
     /// The level that opens a turn right now.
     public var startLevel: Float {
         guard config.adaptive else { return config.start }
-        return min(config.start, max(config.minStart, floor * config.startRatio))
+        return min(config.maxStart, max(config.minStart, floor * config.startRatio))
     }
     /// Below this he has gone quiet.
     public var stopLevel: Float {
