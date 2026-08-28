@@ -65,7 +65,9 @@ public struct Endpointer {
     private var aboveSince: Double? = nil        // onset hold
     private var dips = 0                         // times the level fell below stop then rose again, this turn
     private var below = false
-    private var turnSum: Float = 0, turnN: Int = 0
+    private var turnSum: Float = 0, turnSq: Float = 0, turnN: Int = 0
+    /// Why the last turn was discarded, for the engine to say out loud.
+    public private(set) var lastDiscard: String = ""
     /// True while his audio is coming out of the speaker. Without echo
     /// cancellation the gate must stay shut for as long as that is true —
     /// the reply stream ending is NOT the audio ending (2026-08-27: he
@@ -181,7 +183,7 @@ public struct Endpointer {
             return .none
         case .user:
             if hold { return .none }
-            turnSum += rms; turnN += 1
+            turnSum += rms; turnSq += rms * rms; turnN += 1
             if rms > stopLevel { quietSince = t; if below { dips += 1; below = false } }
             else { below = true }
             if t - turnBeganAt >= config.maxMs { return endTurnNow(at: t) }
@@ -192,25 +194,43 @@ public struct Endpointer {
 
     private mutating func openTurn(at t: Double) -> EndpointerAction {
         state = .user; turnBeganAt = t; quietSince = t
-        dips = 0; below = false; turnSum = 0; turnN = 0
+        dips = 0; below = false; turnSum = 0; turnSq = 0; turnN = 0
         return .startTurn
     }
 
     /// Number of syllable/word gaps seen in the current or last turn.
     public var dipsInTurn: Int { dips }
+    /// Spread of the level over the turn (std / mean). Speech is bursty
+    /// (≳ 0.6); a car, a fan, wind are flat (≲ 0.3).
+    public var spreadInTurn: Float {
+        guard turnN > 1 else { return 0 }
+        let mean = turnSum / Float(turnN)
+        guard mean > 0 else { return 0 }
+        let variance = max(0, turnSq / Float(turnN) - mean * mean)
+        return variance.squareRoot() / mean
+    }
+    public var steadySpread: Float = 0.35
 
     private mutating func endTurnNow(at t: Double) -> EndpointerAction {
         let length = t - turnBeganAt
         if length < config.minMs {
+            lastDiscard = "too short"
             state = muted ? .muted : .listening
             return .discardTurn
         }
-        if !hold && length >= config.steadyMs && dips == 0 && turnN > 0 {
-            // No shape at all: a car, a fan, the wind. Not a turn.
-            floor = max(floor, (turnSum / Float(turnN)) * 0.8)
+        if !hold && length >= config.steadyMs && dips == 0 && turnN > 1 && spreadInTurn < steadySpread {
+            // No shape at all — flat level AND no gaps: a car, a fan, the
+            // wind. (Gaps alone were not enough: a raised floor hides the
+            // gaps in real speech and every turn was dropped, 2026-08-28.)
+            // Lift the floor to it, but never past where the room would
+            // block a raised voice.
+            let mean = turnSum / Float(turnN)
+            floor = min(max(floor, mean * 0.8), config.maxStart / config.startRatio)
+            lastDiscard = String(format: "steady noise %.3f", mean)
             state = muted ? .muted : .listening
             return .discardTurn
         }
+        lastDiscard = ""
         state = .thinking
         return .endTurn
     }

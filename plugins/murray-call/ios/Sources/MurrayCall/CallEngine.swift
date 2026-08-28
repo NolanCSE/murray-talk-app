@@ -278,7 +278,8 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             "gateStart": endpointer.startLevel, "noiseFloor": endpointer.floor, "peakRms": peakRms,
             "micGain": micGain, "sensitivity": sensitivity, "speaker": speaker,
             "routeReason": lastRouteReason, "playing": endpointer.playing,
-            "thinkTick": thinkTick, "dips": endpointer.dipsInTurn, "bargeIn": bargeInSafe,
+            "thinkTick": thinkTick, "dips": endpointer.dipsInTurn, "spread": endpointer.spreadInTurn,
+            "lastDiscard": endpointer.lastDiscard, "bargeIn": bargeInSafe,
             "inputFormat": "\(audio.inputNode.outputFormat(forBus: 0))",
             "inputVP": audio.inputNode.isVoiceProcessingEnabled,
             "category": s.category.rawValue, "mode": s.mode.rawValue,
@@ -401,7 +402,11 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             cue(.sent)
             upload(WAV.encode(pcm16: samples, sampleRate: 16000))
         } else {
-            emit("state", ["state": endpointer.state.rawValue])
+            // Never drop a turn silently: say why on the screen, and sound
+            // the not-heard cue for a real turn that was judged noise.
+            lock.lock(); let why = endpointer.lastDiscard; let st = endpointer.state; lock.unlock()
+            if why.hasPrefix("steady") { emit("doing", ["label": "dropped: " + why]); cue(.notHeard) }
+            emit("state", ["state": st.rawValue])
         }
     }
 
@@ -439,7 +444,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         req.setValue(mime, forHTTPHeaderField: "X-Talk-Mime")
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         req.httpBody = body
-        sse = SSEParser(); replyLine = ""
+        sse = SSEParser(); replyLine = ""; sawHeard = false
         startTicks()
         turnTask?.cancel()
         let task = session.dataTask(with: req)
@@ -460,6 +465,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             emit("error", ["where": "turn", "why": e.localizedDescription])
         }
         if !replyLine.isEmpty { turns.append(Turn(who: "murray", text: replyLine)); replyLine = "" }
+        else if error == nil && !sawHeard { emit("error", ["where": "turn", "why": "the server answered with nothing — no transcript, no reply"]) }
         // The stream ending is not the audio ending: only with nothing queued
         // does the gate open here; otherwise clipDone opens it after the
         // last clip has sounded (he heard himself otherwise, 2026-08-27).
@@ -476,6 +482,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         guard let obj = try? JSONSerialization.jsonObject(with: Data(f.data.utf8)) as? [String: Any] else { return }
         switch f.event {
         case "heard":
+            sawHeard = true
             if obj["empty"] as? Bool == true { emit("heard", ["text": "", "empty": true]); cue(.notHeard); stopTicks(); return }
             let text = obj["text"] as? String ?? ""
             turns.append(Turn(who: "you", text: text))
@@ -504,6 +511,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     }
 
     private var stopAfterPlayback = false
+    private var sawHeard = false
     private func maybeHangUp() {
         // Only once the reply stream is over AND every clip has sounded:
         // he was losing the last half-word of his goodbye (2026-08-27).

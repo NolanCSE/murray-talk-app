@@ -118,6 +118,20 @@ final class NoiseShapeTests: XCTestCase {
         while t <= 5000 { a = e.level(0.0, at: t); if a != .none { break }; t += 20 }
         XCTAssertEqual(a, .endTurn)
     }
+    func testSpeechWithoutGapsIsStillSpeech() {
+        // A raised floor can hide the gaps; the level's spread must still say "voice".
+        var e = Endpointer()
+        XCTAssertEqual(speak(&e, 0.05, from: 0, ms: 140), .startTurn)
+        var a: EndpointerAction = .none
+        var t = 160.0
+        // bursty but never below stop: 0.02..0.09, syllable rate
+        while t <= 4000 { a = e.level(Int(t / 150) % 2 == 0 ? 0.09 : 0.02, at: t); if a != .none { break }; t += 20 }
+        XCTAssertEqual(a, .none)
+        XCTAssertEqual(e.dipsInTurn, 0)
+        XCTAssertGreaterThan(e.spreadInTurn, 0.5)
+        while t <= 6000 { a = e.level(0.0, at: t); if a != .none { break }; t += 20 }
+        XCTAssertEqual(a, .endTurn)
+    }
     func testHoldToTalkIsNeverDroppedAsNoise() {
         var e = Endpointer()
         _ = e.holdStart(at: 0)
