@@ -61,34 +61,29 @@ public final class PushBridge: NSObject, PKPushRegistryDelegate {
         let text = payload.dictionaryPayload["text"] as? String ?? "Murray is calling."
         ringText = text
         callId = "ring-" + String(UUID().uuidString.lowercased().prefix(12))
-        let ck = CallKitBridge.shared
-        ck.onAnswer = { [weak self] in self?.answered() }
-        ck.onEnded = { PushBridge.stopEngine(reason: "call ended") }
-        ck.reportIncoming(line: text) { _ in completion() }
-        // The engine exists from the ring: its own turn machinery asks the
-        // opening line now and holds the audio until the session is live.
+        // EVERY provider closure is wired to THIS ring before the call is
+        // reported — the shared provider still carried the previous call's
+        // closures, and an answer could activate a stale engine
+        // (2026-08-28: 'ended' mid-sequence, stuck HE'S TALKING).
         if PushBridge.engine == nil, let base = PushBridge.baseURL() {
             let e = CallEngine(base: base)
             e.gainDb = Float(UserDefaults.standard.object(forKey: "murray.gainDb") as? Double ?? 8)
             e.onEvent = { name, data in PushBridge.engineEvents?(name, data) }
             PushBridge.engine = e
+            let id = callId
+            let ck = CallKitBridge.shared
+            ck.onAnswer = nil
+            ck.configureSession = { try e.configureSession() }
+            ck.onActivate = {
+                do { try e.start(callId: id) }
+                catch { PushBridge.engineEvents?("error", ["where": "answer", "why": error.localizedDescription]) }
+            }
+            ck.onEnded = { PushBridge.stopEngine(reason: "call ended") }
             e.preheatTurn("[Call connected: YOU rang him about: " + text
                           + " — he is picking up right now. Say why you called in one "
-                          + "sentence, then wait for him.]", callId: callId)
+                          + "sentence, then wait for him.]", callId: id)
         }
-    }
-
-    // MARK: the answered call
-
-    private func answered() {
-        guard let e = PushBridge.engine else { return }
-        let ck = CallKitBridge.shared
-        ck.configureSession = { try e.configureSession() }
-        let id = callId
-        ck.onActivate = {
-            do { try e.start(callId: id) }
-            catch { PushBridge.engineEvents?("error", ["where": "answer", "why": error.localizedDescription]) }
-        }
+        CallKitBridge.shared.reportIncoming(line: text) { _ in completion() }
     }
 
     static func stopEngine(reason: String) {
