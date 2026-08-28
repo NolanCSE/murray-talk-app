@@ -74,6 +74,10 @@ check("the template keeps its placeholder", "__TALK_URL__" in _index_before)
 plist = plistlib.loads((APP / "ios/App/App/Info.plist").read_bytes())
 check("microphone purpose string present",
       "listen" in plist.get("NSMicrophoneUsageDescription", "").lower())
+ent = REPO / "ios" / "App" / "App" / "App.entitlements"
+check("push entitlements present", ent.exists() and "aps-environment" in ent.read_text())
+pbx = (REPO / "ios" / "App" / "App.xcodeproj" / "project.pbxproj").read_text()
+check("entitlements wired into the build", pbx.count("CODE_SIGN_ENTITLEMENTS = App/App.entitlements;") == 2)
 check("audio (and voip, for CallKit) background modes declared", set(plist.get("UIBackgroundModes") or []) >= {"audio"})
 ats = plist.get("NSAppTransportSecurity", {})
 check("ATS: local networking only, no arbitrary cleartext",

@@ -1,4 +1,5 @@
 import UIKit
+import MurrayCall
 import Capacitor
 
 @UIApplicationMain
@@ -7,6 +8,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        MurrayCall.PushBridge.shared.activate()   // VoIP pushes reach a killed app only if this runs at launch
         // Override point for customization after application launch.
         return true
     }

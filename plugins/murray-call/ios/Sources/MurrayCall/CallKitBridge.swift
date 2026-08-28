@@ -7,11 +7,15 @@ import AVFoundation
 /// leaving the foreground. No VoIP push yet (phase 3): every call is
 /// outgoing, started by the page.
 final class CallKitBridge: NSObject, CXProviderDelegate {
+    /// One provider for the app's lifetime: an incoming push must be
+    /// reported to a provider that already exists (phase 2).
+    static let shared = CallKitBridge()
     private let provider: CXProvider
     private let controller = CXCallController()
     private var uuid: UUID?
     var onActivate: (() -> Void)?
     var onEnded: (() -> Void)?
+    var onAnswer: (() -> Void)?
     var configureSession: (() throws -> Void)?
 
     override init() {
@@ -42,6 +46,22 @@ final class CallKitBridge: NSObject, CXProviderDelegate {
     func end() {
         guard let id = uuid else { return }
         controller.request(CXTransaction(action: CXEndCallAction(call: id))) { _ in }
+    }
+
+    /// Murray is ringing. Full-screen call UI, lock screen included.
+    func reportIncoming(line: String, completion: @escaping (Error?) -> Void) {
+        let id = UUID(); uuid = id
+        let update = CXCallUpdate()
+        update.remoteHandle = CXHandle(type: .generic, value: "Murray")
+        update.localizedCallerName = "Murray"
+        update.hasVideo = false
+        provider.reportNewIncomingCall(with: id, update: update) { err in completion(err) }
+    }
+
+    func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+        do { try configureSession?() } catch { action.fail(); return }
+        onAnswer?()
+        action.fulfill()
     }
 
     // MARK: CXProviderDelegate

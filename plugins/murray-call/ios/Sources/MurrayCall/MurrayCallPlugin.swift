@@ -32,9 +32,23 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "route", returnType: CAPPluginReturnPromise),
     ]
 
-    private var engine: CallEngine?
+    private var engine: CallEngine? {
+        get { PushBridge.engine }
+        set { PushBridge.engine = newValue }
+    }
     private var callkit: CallKitBridge?
     private let recent = RingLog(capacity: 200)
+
+    public override func load() {
+        // PushKit registration at every launch — including the background
+        // launch a VoIP push causes. An answered incoming call's engine
+        // events flow to the page through the shared hook.
+        PushBridge.shared.activate()
+        PushBridge.engineEvents = { [weak self] name, data in
+            self?.recent.push(name, data)
+            self?.notifyListeners(name, data: data)
+        }
+    }
 
     private func baseURL() -> URL? {
         // The talk URL (secret included) is the app's own server.url.
@@ -49,20 +63,18 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func start(_ call: CAPPluginCall) {
         guard engine == nil else { call.resolve(["callId": engine!.callId, "already": true]); return }
+        callkit = nil
         guard let base = baseURL() else { call.reject("no talk url in the app config"); return }
         let useCallKit = call.getBool("callkit") ?? true
         let e = CallEngine(base: base)
         e.gainDb = Float(UserDefaults.standard.object(forKey: "murray.gainDb") as? Double ?? 8)
-        e.onEvent = { [weak self] name, data in
-            self?.recent.push(name, data)
-            self?.notifyListeners(name, data: data)
-        }
+        e.onEvent = { name, data in PushBridge.engineEvents?(name, data) }
         engine = e
         let callId = "app-" + String(UUID().uuidString.lowercased().prefix(12))
         AVAudioSession.sharedInstance().requestRecordPermission { granted in
             guard granted else { call.reject("microphone permission denied"); self.engine = nil; return }
             if useCallKit {
-                let ck = CallKitBridge()
+                let ck = CallKitBridge.shared
                 self.callkit = ck
                 ck.configureSession = { try e.configureSession() }
                 ck.onActivate = { [weak self] in
@@ -163,6 +175,7 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func sync(_ call: CAPPluginCall) {
         var out: [String: Any] = engine?.snapshot() ?? ["state": "ended", "callId": "", "turns": []]
         out["recent"] = recent.all()
+        out["pushToken"] = PushBridge.shared.lastToken.isEmpty ? "" : "…" + PushBridge.shared.lastToken.suffix(6)
         call.resolve(out)
     }
 }
