@@ -259,7 +259,8 @@ final class AdaptiveGateTests: XCTestCase {
         var a: EndpointerAction = .none
         var t = 160.0
         while t <= 30000 { a = e.level(0.08, at: t); if a != .none { break }; t += 20 }
-        XCTAssertEqual(a, .discardTurn)                                  // maxMs, then no dips: noise
+        XCTAssertEqual(a, .discardTurn)                                  // ten seconds flat and gapless: noise
+        XCTAssertLessThan(t, 12000)                                      // judged during the turn, not at a 2-minute cap
         XCTAssertGreaterThan(e.startLevel, 0.08)                         // and the gate now sits above it
         XCTAssertEqual(speak(&e, 0.08, from: t + 20, ms: 500), .none)    // so it does not reopen
     }

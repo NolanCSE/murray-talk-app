@@ -194,6 +194,11 @@ public struct Endpointer {
             if rms > stopLevel { quietSince = t; if below { dips += 1; below = false } }
             else { below = true }
             if t - turnBeganAt >= config.maxMs { return endTurnNow(at: t) }
+            // Steady noise is judged DURING the turn, not only at its end:
+            // with a two-minute cap a fan would otherwise hold "GO AHEAD"
+            // open for two minutes. Ten seconds flat and gapless is enough.
+            if !hold && t - turnBeganAt >= config.steadyMs * 4 && dips == 0 && turnN > 20
+                && spreadInTurn < steadySpread { return endTurnNow(at: t) }
             let quiet = t - turnBeganAt > config.softMaxMs ? config.softQuietMs : config.quietMs
             if t - quietSince >= quiet { return endTurnNow(at: t) }
             return .none
