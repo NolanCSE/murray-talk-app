@@ -189,7 +189,10 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             let fmt = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)
             fxFormat = fmt
             audio.connect(player, to: eq, format: fmt)
-            audio.connect(fxPlayer, to: eq, format: fmt)
+            // The EQ has one input bus; a second source on it throws at
+            // engine start (build 33 crashed on every call). Cues go to the
+            // mixer and carry the gain in their amplitude instead.
+            audio.connect(fxPlayer, to: audio.mainMixerNode, format: fmt)
             audio.connect(eq, to: audio.mainMixerNode, format: fmt)
             playbackWired = true
         }
@@ -620,7 +623,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         let total = steps.reduce(0) { $0 + Int(sr * Float($1.ms) / 1000) }
         guard let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(total)) else { return nil }
         buf.frameLength = AVAudioFrameCount(total)
-        let amp = powf(10, db / 20)
+        let amp = powf(10, (db + max(-24, min(24, gainDb))) / 20)
         var i = 0
         for s in steps {
             let n = Int(sr * Float(s.ms) / 1000)
