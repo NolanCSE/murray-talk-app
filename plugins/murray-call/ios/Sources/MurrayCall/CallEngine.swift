@@ -222,6 +222,13 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         guard running else { return }
         running = false
         stopTicks()
+        // Tell the server the call is over — the page does this itself, but a
+        // CallKit hang-up (lock screen, ring call) never reached it and the
+        // line stayed open server-side (2026-08-28).
+        var endReq = URLRequest(url: base.appendingPathComponent("end"))
+        endReq.httpMethod = "POST"
+        endReq.setValue(callId, forHTTPHeaderField: "X-Talk-Call")
+        URLSession.shared.dataTask(with: endReq).resume()
         DispatchQueue.main.async { UIDevice.current.isProximityMonitoringEnabled = false }
         endpointer.end()
         turnTask?.cancel(); turnTask = nil
@@ -539,6 +546,10 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     }
 
     // MARK: playback
+
+    /// A clip fetched outside the engine's own stream — the ring preheat
+    /// (his opening line, fetched while the phone was still ringing).
+    func playExternal(_ mp3: Data) { enqueue(mp3) }
 
     private func enqueue(_ mp3: Data) {
         guard running else { return }
