@@ -68,6 +68,7 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
                 ck.onActivate = { [weak self] in
                     do { try e.start(callId: callId) } catch { self?.notifyListeners("error", data: ["where": "start", "why": error.localizedDescription]) }
                 }
+                ck.onMute = { on in e.setMuted(on) }
                 ck.onEnded = { [weak self] in
                     e.stop(reason: "call ended")
                     self?.engine = nil; self?.callkit = nil

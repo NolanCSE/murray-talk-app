@@ -278,7 +278,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             "gateStart": endpointer.startLevel, "noiseFloor": endpointer.floor, "peakRms": peakRms,
             "micGain": micGain, "sensitivity": sensitivity, "speaker": speaker,
             "routeReason": lastRouteReason, "playing": endpointer.playing,
-            "thinkTick": thinkTick, "dips": endpointer.dipsInTurn, "spread": endpointer.spreadInTurn,
+            "thinkTick": thinkTick, "dips": endpointer.dipsInTurn, "spread": endpointer.spreadInTurn, "muted": endpointer.muted,
             "lastDiscard": endpointer.lastDiscard, "bargeIn": bargeInSafe,
             "inputFormat": "\(audio.inputNode.outputFormat(forBus: 0))",
             "inputVP": audio.inputNode.isVoiceProcessingEnabled,
@@ -338,7 +338,13 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         for i in 0..<boosted.count { ints[i] = Int16(boosted[i] * 32767) }
 
         lock.lock()
-        if capturing {
+        // A hard mute: nothing of his is kept while muted — not in the
+        // turn, not in the preroll. The level still feeds the gate so the
+        // floor keeps tracking the room.
+        if endpointer.muted {
+            if capturing { pcm.append(contentsOf: [Int16](repeating: 0, count: ints.count)) }
+            preroll.removeAll(keepingCapacity: true)
+        } else if capturing {
             pcm.append(contentsOf: ints)
         } else {
             preroll.append(contentsOf: ints)
@@ -415,6 +421,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     func setMuted(_ on: Bool) {
         lock.lock(); let a = endpointer.setMuted(on, at: CallEngine.now()); lock.unlock()
         apply(a)
+        emit("muted", ["on": on])                    // the page's button follows this, whoever pressed it
         emit("state", ["state": endpointer.state.rawValue])
     }
     func holdStart() {

@@ -24,12 +24,33 @@ final class EndpointerTests: XCTestCase {
         XCTAssertEqual(e.state, .listening)
     }
 
+    func testALongTurnIsNotCutAtTwentySeconds() {
+        var e = Endpointer()
+        _ = speak(&e, 0.05, from: 0, ms: 140)
+        var a: EndpointerAction = .none
+        var t = 160.0
+        while t <= 60000 { a = e.level(Int(t / 300) % 2 == 0 ? 0.05 : 0.0, at: t); if a != .none { break }; t += 20 }
+        XCTAssertEqual(a, .none)                               // a minute of talking, still his turn
+        XCTAssertEqual(e.state, .user)
+    }
+    func testPastTheSoftMaxABreathEndsIt() {
+        var e = Endpointer()
+        _ = speak(&e, 0.05, from: 0, ms: 140)
+        var t = 160.0
+        while t <= 95000 { _ = e.level(Int(t / 300) % 2 == 0 ? 0.05 : 0.0, at: t); t += 20 }
+        XCTAssertEqual(e.state, .user)
+        var a: EndpointerAction = .none
+        let quietFrom = t
+        while t <= quietFrom + 1000 { a = e.level(0.0, at: t); if a != .none { break }; t += 20 }
+        XCTAssertEqual(a, .endTurn)                            // ~500 ms of quiet, not 1200
+        XCTAssertLessThan(t - quietFrom, 700)
+    }
     func testMaxLengthCuts() {
         var e = Endpointer()
         _ = speak(&e, 0.05, from: 0, ms: 140)
         var a: EndpointerAction = .none
         var t = 160.0
-        while t <= 25000 {                                    // modulated, so it is speech, until maxMs cuts it
+        while t <= 125000 {                                   // modulated, so it is speech, until maxMs cuts it
             a = e.level(Int(t / 200) % 2 == 0 ? 0.05 : 0.0, at: t); if a != .none { break }; t += 20
         }
         XCTAssertEqual(a, .endTurn)
@@ -177,6 +198,17 @@ final class EchoGuardTests: XCTestCase {
         XCTAssertEqual(e.level(0.9, at: 2000), .none)
         XCTAssertEqual(e.state, .speaking)                     // never .user from his own voice
         XCTAssertEqual(e.holdStart(at: 2100), .bargeIn)        // the bar still interrupts him
+    }
+    func testMutedMicNeverBargesIn() {
+        var e = Endpointer()                                    // level barge-in allowed (AirPods)
+        e.playbackStarted(at: 0)
+        _ = e.setMuted(true, at: 100)
+        XCTAssertEqual(e.state, .speaking)                      // he keeps talking
+        XCTAssertEqual(speak(&e, 0.9, from: 1000, ms: 2000), .none)
+        XCTAssertEqual(e.state, .speaking)
+        e.playbackStopped(at: 4000)
+        XCTAssertEqual(e.state, .muted)
+        XCTAssertEqual(speak(&e, 0.9, from: 5000, ms: 1000), .none)
     }
     func testTextOnlyReplyStillReturnsToListening() {
         var e = Endpointer()

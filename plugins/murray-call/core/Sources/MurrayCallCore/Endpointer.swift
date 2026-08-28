@@ -9,7 +9,9 @@ public struct EndpointerConfig: Equatable {
     public var start: Float = 0.030          // RMS that begins a turn
     public var stop: Float = 0.018           // RMS below which he is quiet
     public var quietMs: Double = 1200        // that long quiet ends the turn (900 cut sentences mid-way, 2026-08-28)
-    public var maxMs: Double = 20000         // a turn never runs longer
+    public var maxMs: Double = 120000        // a turn never runs longer (20 s cut him mid-paragraph, 2026-08-28)
+    public var softMaxMs: Double = 90000     // past this, end at the next breath rather than a hard cut
+    public var softQuietMs: Double = 500
     public var minMs: Double = 600           // shorter than this is a cough
     public var bargeGraceMs: Double = 600    // ignore "speech" this soon after playback starts (echo)
     // Adaptive gate. The raw iPhone microphone (no AGC, voice processing
@@ -169,6 +171,9 @@ public struct Endpointer {
             aboveSince = nil
             return openTurn(at: t)
         case .speaking:
+            // Muted is muted: no sound of his may cut Murray off (2026-08-28,
+            // AirPods on, a barge-in from a muted mic cancelled his reply).
+            if muted { return .none }
             if hold || !config.levelBargeIn { return .none }
             // Barge-in: his voice over Murray's, but not the echo of Murray's
             // own opening, which arrives inside the grace window.
@@ -189,7 +194,8 @@ public struct Endpointer {
             if rms > stopLevel { quietSince = t; if below { dips += 1; below = false } }
             else { below = true }
             if t - turnBeganAt >= config.maxMs { return endTurnNow(at: t) }
-            if t - quietSince >= config.quietMs { return endTurnNow(at: t) }
+            let quiet = t - turnBeganAt > config.softMaxMs ? config.softQuietMs : config.quietMs
+            if t - quietSince >= quiet { return endTurnNow(at: t) }
             return .none
         }
     }

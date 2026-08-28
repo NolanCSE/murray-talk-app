@@ -66,7 +66,10 @@ final class CallKitBridge: NSObject, CXProviderDelegate {
         action.fulfill()
     }
 
+    /// The lock screen's / CarPlay's mute button. Was a no-op (2026-08-28).
+    var onMute: ((Bool) -> Void)?
     func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+        onMute?(action.isMuted)
         action.fulfill()
     }
 }
