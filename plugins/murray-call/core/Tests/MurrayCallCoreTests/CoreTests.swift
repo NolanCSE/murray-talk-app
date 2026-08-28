@@ -201,7 +201,9 @@ final class AdaptiveGateTests: XCTestCase {
     }
     func testNoisyRoomRaisesTheGateAboveTheNoise() {
         var e = Endpointer()
-        for t in stride(from: 0.0, through: 20000, by: 20) { _ = e.level(0.06, at: t) }   // louder than the old 0.030 cap
+        // louder than the old 0.030 cap: it opens a turn at first, maxMs (20 s) ends it as
+        // shapeless noise, the floor lifts, and from then on the room is under the gate
+        for t in stride(from: 0.0, through: 26000, by: 20) { _ = e.level(0.06, at: t) }
         XCTAssertGreaterThan(e.startLevel, 0.06)
         XCTAssertEqual(e.state, .listening)                              // never opened, never stuck
     }
