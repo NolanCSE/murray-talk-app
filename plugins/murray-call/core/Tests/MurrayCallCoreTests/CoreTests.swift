@@ -7,9 +7,9 @@ final class EndpointerTests: XCTestCase {
         XCTAssertEqual(speak(&e, 0.05, from: 0, ms: 140), .startTurn)   // onset hold satisfied
         XCTAssertEqual(e.state, .user)
         for t in stride(from: 20.0, through: 1000, by: 20) { XCTAssertEqual(e.level(0.05, at: t), .none) }
-        // quiet for 900ms
+        // quiet for quietMs (1200 ms)
         var a: EndpointerAction = .none
-        for t in stride(from: 1020.0, through: 2000, by: 20) { a = e.level(0.0, at: t); if a != .none { break } }
+        for t in stride(from: 1020.0, through: 2600, by: 20) { a = e.level(0.0, at: t); if a != .none { break } }
         XCTAssertEqual(a, .endTurn)
         XCTAssertEqual(e.state, .thinking)
     }

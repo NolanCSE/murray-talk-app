@@ -47,7 +47,7 @@ jobs:
         run: |
           set -o pipefail
           swift test 2>&1 | tee test.log | tail -40
-          grep -E "error:|XCTAssert" test.log || true
+          grep -E "error|failed" test.log | grep -v "Test Suite" | head -20 || true
           grep -q "Executed [1-9][0-9]* tests, with 0 failures" test.log
 
   simulator:
@@ -191,6 +191,7 @@ jobs:
           # altool can print a validation ERROR and still exit 0; make that fail.
           xcrun altool --upload-app -f build/out/*.ipa -t ios \
             --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee upload.log
+          if grep -q "Upload limit reached" upload.log; then echo "::warning::TestFlight: Apple's daily upload limit reached — ad hoc IPA still built"; exit 0; fi
           ! grep -q "ERROR" upload.log
       - name: Shred the key
         if: always()
