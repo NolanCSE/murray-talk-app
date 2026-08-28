@@ -40,7 +40,8 @@ final class EndpointerTests: XCTestCase {
         e.playbackStarted(at: 0)
         XCTAssertEqual(e.state, .speaking)
         XCTAssertEqual(e.level(0.08, at: 300), .none)      // echo window
-        XCTAssertEqual(e.level(0.08, at: 700), .bargeIn)   // barge-in has no onset hold: the bar-less interrupt
+        XCTAssertEqual(speak(&e, 0.08, from: 700, ms: 100), .none)      // a cough over his voice
+        XCTAssertEqual(speak(&e, 0.08, from: 900, ms: 300), .bargeIn)   // you, sustained
         XCTAssertEqual(e.state, .user)
     }
 
@@ -131,7 +132,7 @@ final class HighPassTests: XCTestCase {
         let n = 16000
         let x = (0..<n).map { sin(2 * Float.pi * hz * Float($0) / 16000) }
         let y = f.process(x)
-        let tail = Array(y[n/2...])
+        let tail: [Float] = Array(y.suffix(n / 2))
         return tail.withUnsafeBufferPointer { WAV.rms($0) } / Float(0.70710678)
     }
     func testRumbleIsCut() { XCTAssertLessThan(20 * log10(gain(100)), -12) }

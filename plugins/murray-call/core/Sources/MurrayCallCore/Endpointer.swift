@@ -8,7 +8,7 @@ import Foundation
 public struct EndpointerConfig: Equatable {
     public var start: Float = 0.030          // RMS that begins a turn
     public var stop: Float = 0.018           // RMS below which he is quiet
-    public var quietMs: Double = 900         // that long quiet ends the turn
+    public var quietMs: Double = 1200        // that long quiet ends the turn (900 cut sentences mid-way, 2026-08-28)
     public var maxMs: Double = 20000         // a turn never runs longer
     public var minMs: Double = 600           // shorter than this is a cough
     public var bargeGraceMs: Double = 600    // ignore "speech" this soon after playback starts (echo)
@@ -20,7 +20,7 @@ public struct EndpointerConfig: Equatable {
     public var adaptive: Bool = true
     public var minStart: Float = 0.003
     public var startRatio: Float = 2.5
-    public var stopRatio: Float = 0.6       // stop = start * stopRatio
+    public var stopRatio: Float = 0.5       // stop = start * stopRatio
     public var tailMs: Double = 700          // after his audio stops, ignore the room's reverb this long
     /// Level barge-in needs echo cancellation; without it "speech" over his
     /// playback is his own speaker. The engine turns this off when voice
@@ -33,6 +33,7 @@ public struct EndpointerConfig: Equatable {
     // dip below the stop level is steady noise: dropped, and the floor is
     // lifted to it so the source raises the gate instead of re-triggering.
     public var onsetMs: Double = 120
+    public var bargeOnsetMs: Double = 250    // longer over his voice: a cough must not stop him
     public var steadyMs: Double = 2500
     public init() {}
 }
@@ -166,9 +167,13 @@ public struct Endpointer {
             // Barge-in: his voice over Murray's, but not the echo of Murray's
             // own opening, which arrives inside the grace window.
             if rms > startLevel && t - playbackBeganAt > config.bargeGraceMs {
+                if aboveSince == nil { aboveSince = t }
+                if t - aboveSince! < config.bargeOnsetMs { return .none }
+                aboveSince = nil
                 _ = openTurn(at: t)
                 return .bargeIn
             }
+            aboveSince = nil
             return .none
         case .user:
             if hold { return .none }

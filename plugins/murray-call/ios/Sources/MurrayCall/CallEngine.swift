@@ -143,13 +143,27 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         }
         return ["kind": kind, "name": outs.first?.portName ?? "", "speaker": speaker]
     }
-    private func emitRoute() { emit("route", routeInfo()) }
+    private func emitRoute() {
+        // Cutting in by voice is safe with echo cancellation, or when his
+        // voice is in your ear (headphones/Bluetooth) rather than in the
+        // room with the microphone.
+        lock.lock(); endpointer.setLevelBargeIn(bargeInSafe); lock.unlock()
+        emit("route", routeInfo())
+    }
+    private var bargeInSafe: Bool {
+        if vpEnabled { return true }
+        let out = AVAudioSession.sharedInstance().currentRoute.outputs.first?.portType
+        switch out {
+        case .some(.builtInSpeaker), .some(.builtInReceiver), .none: return false
+        default: return true
+        }
+    }
 
     func start(callId: String) throws {
         self.callId = callId
         endpointer = Endpointer()
         endpointer.tune(sensitivity: sensitivity)
-        endpointer.setLevelBargeIn(vpEnabled)
+        endpointer.setLevelBargeIn(bargeInSafe)
         turns = []
         try startInput()
         running = true
@@ -188,7 +202,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             guard let self = self, self.running, self.tapBuffers == mark, !self.healed else { return }
             self.healed = true
             self.vpEnabled = !self.vpEnabled
-            self.lock.lock(); self.endpointer.setLevelBargeIn(self.vpEnabled); self.lock.unlock()
+            self.lock.lock(); self.endpointer.setLevelBargeIn(self.bargeInSafe); self.lock.unlock()
             self.lastError = "no mic buffers in 2s (voice processing \(self.vpEnabled ? "off" : "on")); restarted with it \(self.vpEnabled ? "on" : "off")"
             self.emit("error", ["where": "microphone", "why": self.lastError])
             self.stopInput()
@@ -240,7 +254,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         UserDefaults.standard.set(on, forKey: "murray.vp")
         vpEnabled = on
         healed = false
-        lock.lock(); endpointer.setLevelBargeIn(on); lock.unlock()
+        lock.lock(); endpointer.setLevelBargeIn(bargeInSafe); lock.unlock()
         guard running else { return }
         DispatchQueue.main.async {
             self.stopInput()
@@ -261,7 +275,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             "gateStart": endpointer.startLevel, "noiseFloor": endpointer.floor, "peakRms": peakRms,
             "micGain": micGain, "sensitivity": sensitivity, "speaker": speaker,
             "routeReason": lastRouteReason, "playing": endpointer.playing,
-            "thinkTick": thinkTick, "dips": endpointer.dipsInTurn,
+            "thinkTick": thinkTick, "dips": endpointer.dipsInTurn, "bargeIn": bargeInSafe,
             "inputFormat": "\(audio.inputNode.outputFormat(forBus: 0))",
             "inputVP": audio.inputNode.isVoiceProcessingEnabled,
             "category": s.category.rawValue, "mode": s.mode.rawValue,
@@ -337,9 +351,13 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         switch action {
         case .none: return
         case .bargeIn:
-            // Level barge-in only arrives with echo cancellation on (the
-            // endpointer is told); hold-to-talk barge-in arrives regardless.
+            // Stop the clip AND the stream: clips kept arriving after the
+            // interrupt and he carried on regardless (2026-08-28).
             stopPlayback()
+            turnTask?.cancel(); turnTask = nil
+            stopTicks()
+            if !replyLine.isEmpty { turns.append(Turn(who: "murray", text: replyLine + " —")); replyLine = "" }
+            emit("doing", ["label": ""])
             beginCapture()
         case .startTurn:
             beginCapture()
