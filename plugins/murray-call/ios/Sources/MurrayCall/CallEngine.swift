@@ -13,7 +13,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     private(set) var turns: [Turn] = []
     var onEvent: ((String, [String: Any]) -> Void)?
 
-    private let audio = AVAudioEngine()
+    private var audio = AVAudioEngine()
     private var converter: AVAudioConverter?
     private let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
     private var endpointer = Endpointer()
@@ -34,9 +34,9 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     // .voiceChat session mode runs output through voice processing, which
     // is markedly quieter than media playback — "he gets too quiet,
     // especially with music on" (2026-08-27).
-    private let player = AVAudioPlayerNode()
-    private let fxPlayer = AVAudioPlayerNode()      // cue tones, through the same gain stage
-    private let eq = AVAudioUnitEQ(numberOfBands: 1)
+    private var player = AVAudioPlayerNode()
+    private var fxPlayer = AVAudioPlayerNode()      // cue tones, through the same gain stage
+    private var eq = AVAudioUnitEQ(numberOfBands: 1)
     private var fxFormat: AVAudioFormat?
     private var detect = HighPass()                 // the gate listens above ~250 Hz
     /// Faint tick every 6 s while he is still thinking — a Settings toggle.
@@ -60,6 +60,8 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
                                                name: AVAudioSession.interruptionNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(routeChanged(_:)),
                                                name: AVAudioSession.routeChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(configChanged(_:)),
+                                               name: .AVAudioEngineConfigurationChange, object: nil)
     }
 
     private static func now() -> Double { ProcessInfo.processInfo.systemUptime * 1000 }
@@ -167,6 +169,16 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         endpointer.setLevelBargeIn(bargeInSafe)
         if carryTurn { endpointer.turnSent() }         // the opening line is owed: stay in thinking
         turns = []
+        // A fresh audio graph, built now — under the ACTIVE session. The
+        // ring engine is created during the background push launch, and a
+        // graph built there scheduled clips into a dead output: "HE'S
+        // TALKING" in silence (2026-08-28, build 48).
+        audio = AVAudioEngine()
+        player = AVAudioPlayerNode()
+        fxPlayer = AVAudioPlayerNode()
+        eq = AVAudioUnitEQ(numberOfBands: 1)
+        playbackWired = false
+        converter = nil
         try startInput()
         running = true
         emit("state", ["state": carryTurn ? "thinking" : "listening"])
@@ -672,6 +684,18 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
     }
 
     private var lastRouteReason = ""
+    /// The system rebuilt the audio hardware under our engine (route flip,
+    /// session activation): re-wire the whole graph, playback included.
+    @objc private func configChanged(_ n: Notification) {
+        guard running else { return }
+        DispatchQueue.main.async {
+            self.stopInput()
+            self.playbackWired = false
+            try? self.startInput()
+            self.emitRoute()
+        }
+    }
+
     @objc private func routeChanged(_ n: Notification) {
         guard running else { return }
         let raw = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
