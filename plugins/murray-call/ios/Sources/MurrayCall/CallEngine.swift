@@ -278,7 +278,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             "gateStart": endpointer.startLevel, "noiseFloor": endpointer.floor, "peakRms": peakRms,
             "micGain": micGain, "sensitivity": sensitivity, "speaker": speaker,
             "routeReason": lastRouteReason, "playing": endpointer.playing,
-            "thinkTick": thinkTick, "dips": endpointer.dipsInTurn, "spread": endpointer.spreadInTurn, "muted": endpointer.muted,
+            "thinkTick": thinkTick, "workSound": workSound, "dips": endpointer.dipsInTurn, "spread": endpointer.spreadInTurn, "muted": endpointer.muted,
             "lastDiscard": endpointer.lastDiscard, "bargeIn": bargeInSafe,
             "inputFormat": "\(audio.inputNode.outputFormat(forBus: 0))",
             "inputVP": audio.inputNode.isVoiceProcessingEnabled,
@@ -449,6 +449,13 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         req.httpMethod = "POST"
         req.setValue(callId, forHTTPHeaderField: "X-Talk-Call")
         req.setValue(mime, forHTTPHeaderField: "X-Talk-Mime")
+        // Where he is: what his voice is coming out of, and whether the
+        // screen is anything he can look at. The server turns this into
+        // one sentence of situated context (2026-08-28).
+        let r = routeInfo()
+        let routeStr = "\(r["kind"] as? String ?? "")" + ":" + (r["name"] as? String ?? "")
+        req.setValue(String(routeStr.prefix(60)), forHTTPHeaderField: "X-Talk-Route")
+        req.setValue(screenState(), forHTTPHeaderField: "X-Talk-Screen")
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         req.httpBody = body
         sse = SSEParser(); replyLine = ""; sawHeard = false
@@ -500,6 +507,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             emit("say", ["text": text, "why": obj["why"] as? String ?? ""])
             if let b64 = obj["audio"] as? String, !b64.isEmpty, let mp3 = Data(base64Encoded: b64) {
                 stopTicks()
+                stopWorking()
                 enqueue(mp3)
             }
         case "control":
@@ -507,7 +515,9 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             if type == "end_call" { stopAfterPlayback = true }      // after the stream AND the audio finish
             else if type == "progress" {
                 let label = (obj["label"] as? String ?? obj["tool"] as? String ?? "").replacingOccurrences(of: "_", with: " ")
-                emit("doing", ["label": (obj["status"] as? String) == "completed" ? "" : label])
+                let done = (obj["status"] as? String) == "completed"
+                emit("doing", ["label": done ? "" : label])
+                if done || label.isEmpty { stopWorking() } else if queued == 0 { startWorking() }
             } else if type == "extend", let m = obj["minutes"] {
                 emit("say", ["text": "(\(m) more minutes)", "why": ""])
             }
@@ -627,10 +637,27 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         }
     }
 
+    /// locked | background | foreground, read on the main thread (a turn
+    /// starts off it). Locked is background with protected data gone.
+    private func screenState() -> String {
+        var out = "foreground"
+        let work = {
+            let app = UIApplication.shared
+            if app.applicationState == .active { out = "foreground" }
+            else if !app.isProtectedDataAvailable { out = "locked" }
+            else { out = "background" }
+        }
+        if Thread.isMainThread { work() } else { DispatchQueue.main.sync(execute: work) }
+        return out
+    }
+
     // MARK: cues — "I heard you", "I didn't", "still thinking"
     // Synthesised on the engine so they sound with the screen locked.
 
-    enum Cue { case sent, notHeard, tick }
+    enum Cue { case sent, notHeard, tick, working }
+    /// Soft pulse while a tool runs — Settings toggle, default on.
+    var workSound: Bool = UserDefaults.standard.object(forKey: "murray.workSound") as? Bool ?? true
+    private var workTimer: Timer?
 
     private func tone(_ steps: [(hz: Float, ms: Int)], db: Float) -> AVAudioPCMBuffer? {
         guard let fmt = fxFormat else { return nil }
@@ -659,6 +686,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         case .sent:     buf = tone([(880, 60), (1320, 60)], db: -16)
         case .notHeard: buf = tone([(330, 80), (0, 60), (330, 80)], db: -14)
         case .tick:     buf = tone([(660, 30)], db: -24)
+        case .working:  buf = tone([(196, 40), (0, 30), (220, 40)], db: -30)
         }
         guard let b = buf else { return }
         DispatchQueue.main.async {
@@ -668,6 +696,22 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             if !self.fxPlayer.isPlaying { self.fxPlayer.play() }
         }
     }
+
+    /// A tool is running: the room should not go dead. Starts on a
+    /// non-empty `doing` label while thinking; stops on the first clip, on
+    /// the label clearing, on any state change, on stop.
+    private func startWorking() {
+        guard workSound else { return }
+        DispatchQueue.main.async {
+            if self.workTimer != nil { return }
+            self.cue(.working)
+            self.workTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+                guard let self = self, self.running, self.turnTask != nil, self.queued == 0 else { self?.stopWorking(); return }
+                self.cue(.working)
+            }
+        }
+    }
+    private func stopWorking() { DispatchQueue.main.async { self.workTimer?.invalidate(); self.workTimer = nil } }
 
     private func startTicks() {
         stopTicks()
@@ -679,7 +723,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
             }
         }
     }
-    private func stopTicks() { DispatchQueue.main.async { self.tickTimer?.invalidate(); self.tickTimer = nil } }
+    private func stopTicks() { stopWorking(); DispatchQueue.main.async { self.tickTimer?.invalidate(); self.tickTimer = nil } }
 
     // MARK: events
 

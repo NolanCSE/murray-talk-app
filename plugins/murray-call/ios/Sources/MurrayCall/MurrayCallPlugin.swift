@@ -144,9 +144,12 @@ public class MurrayCallPlugin: CAPPlugin, CAPBridgedPlugin {
     /// setCues({thinkTick}) — the faint tick every 6 s while he thinks.
     @objc func setCues(_ call: CAPPluginCall) {
         let tick = call.getBool("thinkTick") ?? false
+        let work = call.getBool("workSound") ?? true
         UserDefaults.standard.set(tick, forKey: "murray.thinkTick")
+        UserDefaults.standard.set(work, forKey: "murray.workSound")
         engine?.thinkTick = tick
-        call.resolve(["thinkTick": tick])
+        engine?.workSound = work
+        call.resolve(["thinkTick": tick, "workSound": work])
     }
     /// setSensitivity({level: "low"|"normal"|"high"}) — how quietly he can
     /// be spoken to before a turn opens. Remembered; applied to a live call.
