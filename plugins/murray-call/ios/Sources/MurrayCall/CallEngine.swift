@@ -161,13 +161,18 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
 
     func start(callId: String) throws {
         self.callId = callId
+        let carryTurn = preheating && turnTask != nil
         endpointer = Endpointer()
         endpointer.tune(sensitivity: sensitivity)
         endpointer.setLevelBargeIn(bargeInSafe)
+        if carryTurn { endpointer.turnSent() }         // the opening line is owed: stay in thinking
         turns = []
         try startInput()
         running = true
-        emit("state", ["state": "listening"])
+        emit("state", ["state": carryTurn ? "thinking" : "listening"])
+        preheating = false
+        lock.lock(); let held = preStartClips; preStartClips = []; lock.unlock()
+        for c in held { enqueue(c) }
         applyRoute()
     }
 
@@ -466,6 +471,8 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         req.httpBody = body
         sse = SSEParser(); replyLine = ""; sawHeard = false
+        streamActivityAt = CallEngine.now()
+        startWatchdog()
         startTicks()
         turnTask?.cancel()
         let task = session.dataTask(with: req)
@@ -475,6 +482,7 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard dataTask == turnTask else { return }
+        streamActivityAt = CallEngine.now()
         for frame in sse.feed(data) { handle(frame) }
     }
 
@@ -536,6 +544,28 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
 
     private var stopAfterPlayback = false
     private var sawHeard = false
+    private var streamActivityAt: Double = 0
+    private var watchdog: Timer?
+
+    /// "Thinking forever" is a dead stream, not thinking. If the reply
+    /// stream goes silent for 60 s, kill it, say so, reopen the line.
+    private func startWatchdog() {
+        DispatchQueue.main.async {
+            self.watchdog?.invalidate()
+            self.watchdog = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+                guard let self = self else { return }
+                guard self.turnTask != nil else { self.watchdog?.invalidate(); self.watchdog = nil; return }
+                if CallEngine.now() - self.streamActivityAt > 60_000 {
+                    self.turnTask?.cancel(); self.turnTask = nil
+                    self.stopTicks()
+                    self.emit("error", ["where": "turn", "why": "the server went quiet for a minute — the line is open again, say it again"])
+                    self.lock.lock(); self.endpointer.replyDone(); let st = self.endpointer.state; self.lock.unlock()
+                    self.emit("state", ["state": st.rawValue])
+                    self.watchdog?.invalidate(); self.watchdog = nil
+                }
+            }
+        }
+    }
     private func maybeHangUp() {
         // Only once the reply stream is over AND every clip has sounded:
         // he was losing the last half-word of his goodbye (2026-08-27).
@@ -547,12 +577,27 @@ final class CallEngine: NSObject, URLSessionDataDelegate {
 
     // MARK: playback
 
-    /// A clip fetched outside the engine's own stream — the ring preheat
-    /// (his opening line, fetched while the phone was still ringing).
-    func playExternal(_ mp3: Data) { enqueue(mp3) }
+    /// The ring preheat: ask the opening-line turn NOW (the phone is still
+    /// ringing) through the engine's own stream, so the ordinary turn
+    /// rules apply — no second stream to collide with his first words
+    /// (2026-08-28: answered fast, spoke, and the two turns fought).
+    private(set) var preheating = false
+    func preheatTurn(_ text: String) {
+        guard !running, turnTask == nil else { return }
+        preheating = true
+        lock.lock(); endpointer.turnSent(); lock.unlock()
+        upload(Data(text.utf8), mime: "text/plain")
+    }
+
+    private var preStartClips: [Data] = []
 
     private func enqueue(_ mp3: Data) {
-        guard running else { return }
+        guard running else {
+            // The ring preheat streams his opening line before the audio
+            // session exists; hold it and play the moment the call is up.
+            if preheating { lock.lock(); preStartClips.append(mp3); lock.unlock() }
+            return
+        }
         // AVAudioFile reads from disk; a clip is a few tens of KB.
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("murray-\(UUID().uuidString).mp3")
