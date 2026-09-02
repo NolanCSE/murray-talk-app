@@ -65,6 +65,14 @@ public struct Endpointer {
     private var quietSince: Double = 0
     private var playbackBeganAt: Double = 0
     private var aboveSince: Double? = nil        // onset hold
+    /// The quietest the room has been THIS turn (rolling minimum, decaying
+    /// slowly upward). The stop level is derived from a floor FROZEN at turn
+    /// start, measured in whatever short listening window preceded it; when
+    /// the room sits above that after he finishes talking, quiet never
+    /// accumulates and the turn holds GO AHEAD until the 2-minute cap — he
+    /// had to MUTE to commit a turn (2026-09-02). Speech has gaps, and the
+    /// level in those gaps IS the current ambient.
+    private var inTurnMin: Float = .greatestFiniteMagnitude
     private var dips = 0                         // times the level fell below stop then rose again, this turn
     private var below = false
     private var turnSum: Float = 0, turnSq: Float = 0, turnN: Int = 0
@@ -190,9 +198,21 @@ public struct Endpointer {
             if hold { return .none }
             // Shape is judged over the voiced part only: the quiet that ends
             // every turn would make a passing car look bursty.
+            inTurnMin = min(inTurnMin * 1.005, max(rms, 0.0005))
             if rms > stopLevel { turnSum += rms; turnSq += rms * rms; turnN += 1 }
-            if rms > stopLevel { quietSince = t; if below { dips += 1; below = false } }
+            // Quiet is judged against the stale stop level OR the quietest
+            // this turn has been — but only once the level has the shape of
+            // speech, so a flat car still holds the turn for the steady-noise
+            // judge instead of being sent as a 1.2-second "turn". The
+            // mean/2 cap keeps a gapless shout from ending itself.
+            var quietLine = stopLevel
+            if config.adaptive && (dips > 0 || spreadInTurn >= steadySpread) {
+                let mean = turnN > 0 ? turnSum / Float(turnN) : 0
+                quietLine = max(quietLine, min(inTurnMin * 1.6, mean * 0.5))
+            }
+            if rms > stopLevel { if below { dips += 1; below = false } }
             else { below = true }
+            if rms > quietLine { quietSince = t }
             if t - turnBeganAt >= config.maxMs { return endTurnNow(at: t) }
             // Steady noise is judged DURING the turn, not only at its end:
             // with a two-minute cap a fan would otherwise hold "GO AHEAD"
@@ -208,6 +228,7 @@ public struct Endpointer {
     private mutating func openTurn(at t: Double) -> EndpointerAction {
         state = .user; turnBeganAt = t; quietSince = t
         dips = 0; below = false; turnSum = 0; turnSq = 0; turnN = 0
+        inTurnMin = .greatestFiniteMagnitude
         return .startTurn
     }
 

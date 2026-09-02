@@ -153,6 +153,36 @@ final class NoiseShapeTests: XCTestCase {
         while t <= 6000 { a = e.level(0.0, at: t); if a != .none { break }; t += 20 }
         XCTAssertEqual(a, .endTurn)
     }
+    func testARoomAboveTheStaleStopLevelStillEndsTheTurn() {
+        // 2026-09-02: the stop level comes from a floor frozen at turn start,
+        // measured in a short quiet moment. When the room then hums above it
+        // (traffic, a fan starting, speakerphone), quiet never accumulated,
+        // GO AHEAD held until the 2-minute cap, and muting was the only way
+        // to commit a turn. Quiet is now also judged against the quietest
+        // the room has been this turn.
+        var e = Endpointer()
+        for t in stride(from: 0.0, through: 2000, by: 20) { _ = e.level(0.002, at: t) }
+        XCTAssertEqual(speak(&e, 0.05, from: 2020, ms: 140), .startTurn)
+        var a: EndpointerAction = .none
+        var t = 2180.0
+        // bursty speech whose gaps land on the room (0.008), not on silence
+        while t <= 5000 { a = e.level(Int(t / 300) % 2 == 0 ? 0.05 : 0.008, at: t); if a != .none { break }; t += 20 }
+        XCTAssertEqual(a, .none)
+        let spokeUntil = t
+        // he stops; the room stays at 0.006 — above stop (floor-derived ~0.0025)
+        while t <= spokeUntil + 8000 { a = e.level(0.006, at: t); if a != .none { break }; t += 20 }
+        XCTAssertEqual(a, .endTurn)
+        XCTAssertLessThan(t - spokeUntil, 3000)
+    }
+    func testMutingMidTurnCommitsIt() {
+        // His workaround during the bug above — and the right behaviour:
+        // muting while a turn is open sends it rather than losing it.
+        var e = Endpointer()
+        _ = speak(&e, 0.05, from: 0, ms: 140)
+        for t in stride(from: 160.0, through: 1200, by: 20) { _ = e.level(Int(t / 300) % 2 == 0 ? 0.05 : 0.0, at: t) }
+        XCTAssertEqual(e.setMuted(true, at: 1220), .endTurn)
+        XCTAssertEqual(e.state, .thinking)
+    }
     func testHoldToTalkIsNeverDroppedAsNoise() {
         var e = Endpointer()
         _ = e.holdStart(at: 0)
